@@ -1,0 +1,2918 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>梅山三十六彎 3D 爬山賽車原型 (162 甲線縣道)</title>
+  <!-- 載入 Tailwind CSS 與 Inter 字型 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet" />
+  <!-- 載入 Three.js r128 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Microsoft JhengHei", sans-serif;
+      background-color: #0f172a;
+    }
+    #game-canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+    .glass-panel {
+      background: rgba(15, 23, 42, 0.72);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.45);
+    }
+    .ctrl-btn {
+      transition: transform 0.12s ease, background-color 0.15s ease, border-color 0.15s ease;
+    }
+    .ctrl-btn:hover {
+      background: rgba(30, 41, 59, 0.92);
+      border-color: rgba(56, 189, 248, 0.55);
+    }
+    .ctrl-btn:active, .touch-active {
+      transform: scale(0.94);
+      background: rgba(14, 165, 233, 0.35) !important;
+      border-color: rgba(56, 189, 248, 0.85) !important;
+    }
+  </style>
+</head>
+<body>
+  <!-- 主 3D 渲染畫布 -->
+  <canvas id="game-canvas"></canvas>
+
+  <!-- 左上角：賽道即時遙測資訊 -->
+  <div class="fixed top-3 left-3 sm:top-4 sm:left-4 z-20 flex flex-col gap-2 max-w-[275px] sm:max-w-xs pointer-events-none">
+    <div class="glass-panel rounded-2xl p-3 sm:p-3.5 text-slate-100">
+      <div class="flex items-center justify-between gap-2 mb-1.5">
+        <span class="text-xs font-bold tracking-wider uppercase text-emerald-400">縣道 162 甲線 · 梅山</span>
+        <span id="hud-bend" class="text-xs font-extrabold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/30">
+          起點準備
+        </span>
+      </div>
+
+      <!-- 時速與檔位 -->
+      <div class="flex items-baseline justify-between my-1">
+        <div class="flex items-baseline gap-1.5">
+          <span id="hud-speed" class="text-3xl sm:text-4xl font-black tracking-tight text-white tabular-nums">0</span>
+          <span class="text-xs font-semibold text-slate-400">KM/H</span>
+        </div>
+        <div class="text-right">
+          <div class="text-[10px] text-slate-400">檔位 / 甩尾</div>
+          <div class="flex items-center justify-end gap-1.5">
+            <span id="hud-gear" class="text-sm font-black text-sky-400">N</span>
+            <span class="text-slate-600">|</span>
+            <span id="hud-drift" class="text-xs font-bold text-amber-300 tabular-nums">0 PT</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 海拔、坡度、進度與計時 -->
+      <div class="grid grid-cols-3 gap-1.5 pt-2 mt-1.5 border-t border-slate-700/60 text-center">
+        <div class="bg-slate-900/55 rounded-xl py-1 px-1">
+          <div class="text-[10px] text-slate-400">海拔 / 坡度</div>
+          <div class="text-xs font-bold text-emerald-300 tabular-nums">
+            <span id="hud-elev">326m</span>
+            <span id="hud-slope" class="text-[10px] text-slate-300 ml-0.5">0%</span>
+          </div>
+        </div>
+        <div class="bg-slate-900/55 rounded-xl py-1 px-1">
+          <div class="text-[10px] text-slate-400">爬升進度</div>
+          <div id="hud-progress" class="text-xs font-bold text-sky-300 tabular-nums">0.0%</div>
+        </div>
+        <div class="bg-slate-900/55 rounded-xl py-1 px-1">
+          <div class="text-[10px] text-slate-400">計時</div>
+          <div id="hud-time" class="text-xs font-bold text-white tabular-nums">00:00.0</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 地標與狀態提示橫幅 -->
+    <div id="landmark-toast" class="glass-panel rounded-xl px-3.5 py-2 text-xs sm:text-sm font-bold text-amber-200 border-amber-400/40 opacity-0 transform -translate-y-2 transition-all duration-300">
+      📍 西門大將軍（起點 · 海拔 326m）
+    </div>
+  </div>
+
+  <!-- 右上角：路線地形小地圖 -->
+  <div class="fixed top-3 right-3 sm:top-4 sm:right-4 z-20 glass-panel rounded-2xl p-2 sm:p-2.5 text-slate-200">
+    <div class="flex items-center justify-between text-[10px] text-slate-300 px-1 mb-1">
+      <span class="font-bold text-emerald-300">162甲 GPX 實測軌跡</span>
+      <span id="hud-total-dist" class="text-slate-400">8.6 KM</span>
+    </div>
+    <canvas id="minimap" width="230" height="145" class="rounded-xl bg-slate-950/85 border border-slate-700/60 block w-[155px] h-[98px] sm:w-[230px] sm:h-[145px]"></canvas>
+  </div>
+
+  <!-- 左下角：功能控制按鈕列 -->
+  <div class="fixed bottom-3 left-3 sm:bottom-4 sm:left-4 z-20 flex flex-wrap gap-1.5 sm:gap-2 max-w-[72vw] sm:max-w-2xl">
+    <button id="btn-cam" class="ctrl-btn glass-panel rounded-xl px-2.5 py-2 sm:px-3.5 sm:py-2 text-xs font-bold text-slate-100 flex items-center gap-1.5 cursor-pointer">
+      <span>🎥</span><span id="cam-label">追尾視角 (C)</span>
+    </button>
+    <button id="btn-contour" class="ctrl-btn glass-panel rounded-xl px-2.5 py-2 sm:px-3.5 sm:py-2 text-xs font-bold text-teal-300 flex items-center gap-1.5 cursor-pointer">
+      <span>🗺️</span><span id="contour-label">等高線 10m (T)</span>
+    </button>
+    <button id="btn-fog" class="ctrl-btn glass-panel rounded-xl px-2.5 py-2 sm:px-3.5 sm:py-2 text-xs font-bold text-sky-300 flex items-center gap-1.5 cursor-pointer">
+      <span>🌫️</span><span id="fog-label">薄霧山嵐 (F)</span>
+    </button>
+    <button id="btn-reset" class="ctrl-btn glass-panel rounded-xl px-2.5 py-2 sm:px-3.5 sm:py-2 text-xs font-bold text-amber-300 flex items-center gap-1.5 cursor-pointer">
+      <span>🔄</span><span>原地回正 (R)</span>
+    </button>
+    <button id="btn-home" class="ctrl-btn glass-panel rounded-xl px-2.5 py-2 sm:px-3.5 sm:py-2 text-xs font-bold text-emerald-300 flex items-center gap-1.5 cursor-pointer">
+      <span>🏁</span><span>回到初始點 (H)</span>
+    </button>
+  </div>
+
+  <!-- 桌面端操作提示（右下角） -->
+  <div class="hidden md:flex fixed bottom-4 right-4 z-20 glass-panel rounded-xl px-3.5 py-2 text-[11px] text-slate-300 items-center gap-3 pointer-events-none">
+    <span><strong class="text-white">WASD / 方向鍵</strong> 駕駛</span>
+    <span class="text-slate-600">|</span>
+    <span><strong class="text-amber-300">空白鍵</strong> 手煞車甩尾</span>
+  </div>
+
+  <!-- 行動裝置觸控按鈕（小螢幕顯示） -->
+  <div class="md:hidden fixed bottom-16 inset-x-3 z-20 flex items-end justify-between pointer-events-none">
+    <!-- 左側轉向 -->
+    <div class="flex gap-2 pointer-events-auto">
+      <button id="btn-touch-left" class="ctrl-btn glass-panel w-14 h-14 rounded-2xl text-xl font-black text-white flex items-center justify-center">◀</button>
+      <button id="btn-touch-right" class="ctrl-btn glass-panel w-14 h-14 rounded-2xl text-xl font-black text-white flex items-center justify-center">▶</button>
+    </div>
+    <!-- 右側油門/煞車/手煞 -->
+    <div class="flex gap-2 pointer-events-auto">
+      <button id="btn-touch-drift" class="ctrl-btn glass-panel px-3 h-14 rounded-2xl text-xs font-extrabold text-amber-300 flex items-center justify-center">手煞</button>
+      <button id="btn-touch-brake" class="ctrl-btn glass-panel w-14 h-14 rounded-2xl text-xs font-extrabold text-rose-300 flex items-center justify-center">煞/倒</button>
+      <button id="btn-touch-gas" class="ctrl-btn glass-panel w-14 h-14 rounded-2xl text-xs font-extrabold text-emerald-300 flex items-center justify-center">油門</button>
+    </div>
+  </div>
+
+  <!-- 抵達終點結算視窗 -->
+  <div id="finish-modal" class="fixed inset-0 z-30 bg-slate-950/75 backdrop-blur-md hidden items-center justify-center p-4">
+    <div class="glass-panel rounded-3xl max-w-md w-full p-6 sm:p-7 text-center text-slate-100 border-emerald-400/40">
+      <div class="text-4xl mb-2">🏆</div>
+      <h2 class="text-2xl font-black text-white mb-1">征服梅山三十六彎！</h2>
+      <p class="text-xs sm:text-sm text-emerald-300 mb-5">已完成 GPX 實測攀升路段 · 太平雲梯入口 (海拔 931m)</p>
+      <div class="grid grid-cols-3 gap-2.5 mb-6">
+        <div class="bg-slate-900/75 rounded-2xl p-3 border border-slate-700/60">
+          <div class="text-[11px] text-slate-400 mb-0.5">完賽時間</div>
+          <div id="finish-time" class="text-base sm:text-lg font-black text-white tabular-nums">00:00.0</div>
+        </div>
+        <div class="bg-slate-900/75 rounded-2xl p-3 border border-slate-700/60">
+          <div class="text-[11px] text-slate-400 mb-0.5">最高時速</div>
+          <div id="finish-max-speed" class="text-base sm:text-lg font-black text-sky-300 tabular-nums">0 km/h</div>
+        </div>
+        <div class="bg-slate-900/75 rounded-2xl p-3 border border-slate-700/60">
+          <div class="text-[11px] text-slate-400 mb-0.5">甩尾積分</div>
+          <div id="finish-drift" class="text-base sm:text-lg font-black text-amber-300 tabular-nums">0</div>
+        </div>
+      </div>
+      <button id="btn-play-again" class="w-full py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-sm sm:text-base transition cursor-pointer shadow-lg shadow-emerald-500/25">
+        回到西門大將軍 · 再次挑戰
+      </button>
+    </div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // 1. Three.js 場景、渲染器、攝影機、霧效與光源初始化
+    // =========================================================================
+    const fogLevels = [
+      { name: '薄霧山嵐 (F)', color: 0x93c5fd, density: 0.00055 },
+      { name: '午後濃霧 (F)', color: 0xcbd5e1, density: 0.00165 },
+      { name: '晴朗無霧 (F)', color: 0x7dd3fc, density: 0.00018 }
+    ];
+    let currentFogIdx = 0;
+
+    const canvas = document.getElementById('game-canvas');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(fogLevels[0].color);
+    scene.fog = new THREE.FogExp2(fogLevels[0].color, fogLevels[0].density);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.3, 4200);
+
+    // 環境半球光與模擬山區陽光的方向光
+    const hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x2d4c2b, 0.85);
+    scene.add(hemiLight);
+
+    const dirLight = new THREE.DirectionalLight(0xfffbeb, 1.15);
+    dirLight.position.set(220, 340, -180);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.width = 2048;
+    dirLight.shadow.mapSize.height = 2048;
+    dirLight.shadow.camera.near = 10;
+    dirLight.shadow.camera.far = 900;
+    const shadowExtent = 160;
+    dirLight.shadow.camera.left = -shadowExtent;
+    dirLight.shadow.camera.right = shadowExtent;
+    dirLight.shadow.camera.top = shadowExtent;
+    dirLight.shadow.camera.bottom = -shadowExtent;
+    dirLight.shadow.bias = -0.0005;
+    scene.add(dirLight);
+    scene.add(dirLight.target);
+
+    // =========================================================================
+    // 2. Strava 單車實測 GPX 軌跡解析與 1:1 經緯度/高程投影（西門大將軍 -> 太平36彎終點）
+    // =========================================================================
+    const rawStravaGPX = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1">
+ <trk><trkseg>
+   <trkpt lat="23.585050000000003" lon="120.55749000000002"><ele>155.84</ele></trkpt>
+   <trkpt lat="23.584620001581587" lon="120.5582100024884"><ele>157.56</ele></trkpt>
+   <trkpt lat="23.584190000000003" lon="120.55893"><ele>160.89</ele></trkpt>
+   <trkpt lat="23.583905000749287" lon="120.55943500121492"><ele>163.86</ele></trkpt>
+   <trkpt lat="23.583620000000003" lon="120.55994000000001"><ele>166.10</ele></trkpt>
+   <trkpt lat="23.583190000000002" lon="120.5605"><ele>167.36</ele></trkpt>
+   <trkpt lat="23.582880000000003" lon="120.56092000000001"><ele>169.11</ele></trkpt>
+   <trkpt lat="23.58263" lon="120.56116000000002"><ele>170.84</ele></trkpt>
+   <trkpt lat="23.582330000000002" lon="120.56131"><ele>172.55</ele></trkpt>
+   <trkpt lat="23.58218" lon="120.56136000000001"><ele>173.32</ele></trkpt>
+   <trkpt lat="23.582060000000002" lon="120.56176"><ele>173.97</ele></trkpt>
+   <trkpt lat="23.581830000000004" lon="120.56212000000001"><ele>175.97</ele></trkpt>
+   <trkpt lat="23.581470000000003" lon="120.56253000000001"><ele>180.51</ele></trkpt>
+   <trkpt lat="23.581850000000003" lon="120.56340000000002"><ele>185.67</ele></trkpt>
+   <trkpt lat="23.58189" lon="120.56353000000001"><ele>186.4</ele></trkpt>
+   <trkpt lat="23.581930000000003" lon="120.56387000000001"><ele>188.88</ele></trkpt>
+   <trkpt lat="23.581940000000003" lon="120.56422"><ele>191.61</ele></trkpt>
+   <trkpt lat="23.581850000000003" lon="120.56469000000001"><ele>193.9</ele></trkpt>
+   <trkpt lat="23.581740000000003" lon="120.56486000000001"><ele>194.43</ele></trkpt>
+   <trkpt lat="23.581590000000002" lon="120.56497000000002"><ele>194.43</ele></trkpt>
+   <trkpt lat="23.58105" lon="120.56527000000001"><ele>195.17</ele></trkpt>
+   <trkpt lat="23.58086" lon="120.56531000000001"><ele>195.25</ele></trkpt>
+   <trkpt lat="23.580750000000002" lon="120.56531000000001"><ele>195.25</ele></trkpt>
+   <trkpt lat="23.580650000000002" lon="120.56527000000001"><ele>195.3</ele></trkpt>
+   <trkpt lat="23.580540000000003" lon="120.56518000000001"><ele>195.3</ele></trkpt>
+   <trkpt lat="23.580260000000003" lon="120.56490000000001"><ele>195.97</ele></trkpt>
+   <trkpt lat="23.580150000000003" lon="120.56486000000001"><ele>195.97</ele></trkpt>
+   <trkpt lat="23.57957" lon="120.56488000000002"><ele>197.13</ele></trkpt>
+   <trkpt lat="23.579340000000002" lon="120.56484"><ele>197.60</ele></trkpt>
+   <trkpt lat="23.578930000000003" lon="120.56465000000001"><ele>198.49</ele></trkpt>
+   <trkpt lat="23.578560000000003" lon="120.56437000000001"><ele>199.87</ele></trkpt>
+   <trkpt lat="23.57814500074404" lon="120.56385999827958"><ele>203.16</ele></trkpt>
+   <trkpt lat="23.577730000000003" lon="120.56335000000001"><ele>207.55</ele></trkpt>
+   <trkpt lat="23.577560000000002" lon="120.56322000000002"><ele>208.31</ele></trkpt>
+   <trkpt lat="23.5775" lon="120.56320000000001"><ele>208.59</ele></trkpt>
+   <trkpt lat="23.57738" lon="120.56321000000001"><ele>208.78</ele></trkpt>
+   <trkpt lat="23.57721" lon="120.56325000000001"><ele>209.00</ele></trkpt>
+   <trkpt lat="23.576490000693482" lon="120.56370000243926"><ele>210.31</ele></trkpt>
+   <trkpt lat="23.575770000000002" lon="120.56415000000001"><ele>212.91</ele></trkpt>
+   <trkpt lat="23.575450000000004" lon="120.56428000000001"><ele>215.64</ele></trkpt>
+   <trkpt lat="23.575000000000003" lon="120.56438000000001"><ele>219.55</ele></trkpt>
+   <trkpt lat="23.57488" lon="120.56439"><ele>220.33</ele></trkpt>
+   <trkpt lat="23.57475" lon="120.56436000000001"><ele>221.05</ele></trkpt>
+   <trkpt lat="23.574330000000003" lon="120.56411000000001"><ele>224.70</ele></trkpt>
+   <trkpt lat="23.574150000000003" lon="120.56409000000001"><ele>226.64</ele></trkpt>
+   <trkpt lat="23.573790000000002" lon="120.56418000000001"><ele>228.23</ele></trkpt>
+   <trkpt lat="23.573600000000003" lon="120.56431"><ele>231.74</ele></trkpt>
+   <trkpt lat="23.57317" lon="120.56471"><ele>235.09</ele></trkpt>
+   <trkpt lat="23.573" lon="120.56483000000001"><ele>237.07</ele></trkpt>
+   <trkpt lat="23.572750000000003" lon="120.56497000000002"><ele>240.12</ele></trkpt>
+   <trkpt lat="23.57219000008066" lon="120.56517000086978"><ele>246.77</ele></trkpt>
+   <trkpt lat="23.571630000000003" lon="120.56537000000002"><ele>251.01</ele></trkpt>
+   <trkpt lat="23.571520000000003" lon="120.56539000000001"><ele>252.05</ele></trkpt>
+   <trkpt lat="23.571330000000003" lon="120.56552"><ele>253.61</ele></trkpt>
+   <trkpt lat="23.57122" lon="120.56563000000001"><ele>256.02</ele></trkpt>
+   <trkpt lat="23.570880000000002" lon="120.5661"><ele>259.63</ele></trkpt>
+   <trkpt lat="23.57054" lon="120.56653000000001"><ele>261.06</ele></trkpt>
+   <trkpt lat="23.570480000000003" lon="120.56675000000001"><ele>261.02</ele></trkpt>
+   <trkpt lat="23.570480000000003" lon="120.56726"><ele>260.74</ele></trkpt>
+   <trkpt lat="23.57043" lon="120.56741000000001"><ele>260.70</ele></trkpt>
+   <trkpt lat="23.570300000000003" lon="120.56756000000001"><ele>260.89</ele></trkpt>
+   <trkpt lat="23.570200000000003" lon="120.56761000000002"><ele>261.31</ele></trkpt>
+   <trkpt lat="23.56981" lon="120.56769000000001"><ele>261.92</ele></trkpt>
+   <trkpt lat="23.569640000000003" lon="120.56769000000001"><ele>262.09</ele></trkpt>
+   <trkpt lat="23.569570000000002" lon="120.56767"><ele>262.12</ele></trkpt>
+   <trkpt lat="23.56942" lon="120.56754000000001"><ele>262.06</ele></trkpt>
+   <trkpt lat="23.569380000000002" lon="120.56748"><ele>262.06</ele></trkpt>
+   <trkpt lat="23.56934" lon="120.56731"><ele>262.11</ele></trkpt>
+   <trkpt lat="23.56934" lon="120.56709000000001"><ele>262.34</ele></trkpt>
+   <trkpt lat="23.56932" lon="120.56694000000002"><ele>262.15</ele></trkpt>
+   <trkpt lat="23.569190000000003" lon="120.56679000000001"><ele>261.55</ele></trkpt>
+   <trkpt lat="23.56897" lon="120.56677"><ele>261.09</ele></trkpt>
+   <trkpt lat="23.568800000000003" lon="120.56684000000001"><ele>260.92</ele></trkpt>
+   <trkpt lat="23.568540000000002" lon="120.56703000000002"><ele>260.91</ele></trkpt>
+   <trkpt lat="23.568440000000002" lon="120.56718000000001"><ele>260.95</ele></trkpt>
+   <trkpt lat="23.56829" lon="120.56755000000001"><ele>262.38</ele></trkpt>
+   <trkpt lat="23.56809" lon="120.56781000000001"><ele>264.99</ele></trkpt>
+   <trkpt lat="23.56762" lon="120.56821000000001"><ele>270.39</ele></trkpt>
+   <trkpt lat="23.56756" lon="120.56829"><ele>270.39</ele></trkpt>
+   <trkpt lat="23.567490000000003" lon="120.56859000000001"><ele>272.36</ele></trkpt>
+   <trkpt lat="23.56754" lon="120.56892"><ele>275.29</ele></trkpt>
+   <trkpt lat="23.56771" lon="120.56932"><ele>280.93</ele></trkpt>
+   <trkpt lat="23.56775" lon="120.56954"><ele>281.82</ele></trkpt>
+   <trkpt lat="23.56771" lon="120.57010000000001"><ele>287.01</ele></trkpt>
+   <trkpt lat="23.56764" lon="120.57042000000001"><ele>289.08</ele></trkpt>
+   <trkpt lat="23.567490000000003" lon="120.57083000000002"><ele>292.89</ele></trkpt>
+   <trkpt lat="23.567245000545558" lon="120.57125500084845"><ele>299.71</ele></trkpt>
+   <trkpt lat="23.567" lon="120.57168000000001"><ele>301.88</ele></trkpt>
+   <trkpt lat="23.56696" lon="120.57209"><ele>307.39</ele></trkpt>
+   <trkpt lat="23.5667" lon="120.57299"><ele>310.91</ele></trkpt>
+   <trkpt lat="23.56653" lon="120.57317"><ele>314.13</ele></trkpt>
+   <trkpt lat="23.5664" lon="120.57323000000001"><ele>315.26</ele></trkpt>
+   <trkpt lat="23.566010000000002" lon="120.57334000000002"><ele>318.01</ele></trkpt>
+   <trkpt lat="23.565900000000003" lon="120.57344"><ele>318.01</ele></trkpt>
+   <trkpt lat="23.565900000000003" lon="120.57351000000001"><ele>319.54</ele></trkpt>
+   <trkpt lat="23.56595" lon="120.57355000000001"><ele>319.54</ele></trkpt>
+   <trkpt lat="23.566010000000002" lon="120.57357"><ele>320.08</ele></trkpt>
+   <trkpt lat="23.566160000000004" lon="120.57355000000001"><ele>320.57</ele></trkpt>
+   <trkpt lat="23.56659" lon="120.57342000000001"><ele>322.92</ele></trkpt>
+   <trkpt lat="23.5667" lon="120.57342000000001"><ele>323.57</ele></trkpt>
+   <trkpt lat="23.566720000000004" lon="120.57347000000001"><ele>324.01</ele></trkpt>
+   <trkpt lat="23.566720000000004" lon="120.57353"><ele>324.5</ele></trkpt>
+   <trkpt lat="23.566660000000002" lon="120.57362"><ele>326.07</ele></trkpt>
+   <trkpt lat="23.566480000000002" lon="120.57374000000002"><ele>326.95</ele></trkpt>
+   <trkpt lat="23.56595" lon="120.57404000000001"><ele>333.24</ele></trkpt>
+   <trkpt lat="23.56584" lon="120.57413000000001"><ele>333.92</ele></trkpt>
+   <trkpt lat="23.565730000000002" lon="120.57426000000001"><ele>335.51</ele></trkpt>
+   <trkpt lat="23.565600000000003" lon="120.57435000000001"><ele>335.51</ele></trkpt>
+   <trkpt lat="23.56528" lon="120.57447"><ele>338.3</ele></trkpt>
+   <trkpt lat="23.56465" lon="120.57476000000001"><ele>341.37</ele></trkpt>
+   <trkpt lat="23.564510000000002" lon="120.57490000000001"><ele>343.11</ele></trkpt>
+   <trkpt lat="23.56443" lon="120.57505"><ele>343.88</ele></trkpt>
+   <trkpt lat="23.56436" lon="120.57540000000002"><ele>345.34</ele></trkpt>
+   <trkpt lat="23.56427" lon="120.57557000000001"><ele>345.93</ele></trkpt>
+   <trkpt lat="23.564220000000002" lon="120.57563"><ele>345.93</ele></trkpt>
+   <trkpt lat="23.56409" lon="120.57571000000002"><ele>346.32</ele></trkpt>
+   <trkpt lat="23.56396" lon="120.57569000000001"><ele>346.49</ele></trkpt>
+   <trkpt lat="23.563920000000003" lon="120.57566000000001"><ele>346.49</ele></trkpt>
+   <trkpt lat="23.563840000000003" lon="120.57556000000001"><ele>346.74</ele></trkpt>
+   <trkpt lat="23.563810000000004" lon="120.57540000000002"><ele>346.98</ele></trkpt>
+   <trkpt lat="23.563760000000002" lon="120.57526000000001"><ele>347.74</ele></trkpt>
+   <trkpt lat="23.563720000000004" lon="120.57525000000001"><ele>347.74</ele></trkpt>
+   <trkpt lat="23.563640000000003" lon="120.57526000000001"><ele>348.88</ele></trkpt>
+   <trkpt lat="23.563480000000002" lon="120.57539000000001"><ele>349.39</ele></trkpt>
+   <trkpt lat="23.563450000000003" lon="120.57545"><ele>349.95</ele></trkpt>
+   <trkpt lat="23.563390000000002" lon="120.57566000000001"><ele>350.56</ele></trkpt>
+   <trkpt lat="23.563360000000003" lon="120.57601000000001"><ele>353.05</ele></trkpt>
+   <trkpt lat="23.56333" lon="120.57608"><ele>354.50</ele></trkpt>
+   <trkpt lat="23.563270000000003" lon="120.57612"><ele>354.50</ele></trkpt>
+   <trkpt lat="23.563170000000003" lon="120.57614000000001"><ele>354.50</ele></trkpt>
+   <trkpt lat="23.563100000000002" lon="120.57612"><ele>355.57</ele></trkpt>
+   <trkpt lat="23.56304" lon="120.57607000000002"><ele>355.57</ele></trkpt>
+   <trkpt lat="23.56296" lon="120.57594"><ele>357.29</ele></trkpt>
+   <trkpt lat="23.56285" lon="120.57560000000001"><ele>359.91</ele></trkpt>
+   <trkpt lat="23.562720000000002" lon="120.57505"><ele>364.95</ele></trkpt>
+   <trkpt lat="23.56275" lon="120.57484000000001"><ele>366.09</ele></trkpt>
+   <trkpt lat="23.562980000000003" lon="120.57437000000002"><ele>371.4</ele></trkpt>
+   <trkpt lat="23.563080000000003" lon="120.57402"><ele>372.78</ele></trkpt>
+   <trkpt lat="23.563070000000003" lon="120.57369000000001"><ele>376.04</ele></trkpt>
+   <trkpt lat="23.563010000000002" lon="120.57344"><ele>378.02</ele></trkpt>
+   <trkpt lat="23.562800000000003" lon="120.57311000000001"><ele>380.76</ele></trkpt>
+   <trkpt lat="23.562780000000004" lon="120.5729"><ele>382.67</ele></trkpt>
+   <trkpt lat="23.56275" lon="120.57277"><ele>384.03</ele></trkpt>
+   <trkpt lat="23.562700000000003" lon="120.57268"><ele>384.61</ele></trkpt>
+   <trkpt lat="23.562620000000003" lon="120.57264"><ele>384.87</ele></trkpt>
+   <trkpt lat="23.56255" lon="120.57264"><ele>384.87</ele></trkpt>
+   <trkpt lat="23.562250000000002" lon="120.57279000000001"><ele>386.86</ele></trkpt>
+   <trkpt lat="23.561950000000003" lon="120.57274000000001"><ele>389.0</ele></trkpt>
+   <trkpt lat="23.561860000000003" lon="120.57275000000001"><ele>389.79</ele></trkpt>
+   <trkpt lat="23.561760000000003" lon="120.57280000000002"><ele>390.76</ele></trkpt>
+   <trkpt lat="23.561660000000003" lon="120.57293000000001"><ele>391.29</ele></trkpt>
+   <trkpt lat="23.56165" lon="120.57303"><ele>391.88</ele></trkpt>
+   <trkpt lat="23.561680000000003" lon="120.57316000000002"><ele>392.20</ele></trkpt>
+   <trkpt lat="23.56201" lon="120.57359000000001"><ele>395.72</ele></trkpt>
+   <trkpt lat="23.562130000000003" lon="120.57387000000001"><ele>399.25</ele></trkpt>
+   <trkpt lat="23.562160000000002" lon="120.57404000000001"><ele>401.53</ele></trkpt>
+   <trkpt lat="23.56212" lon="120.57432000000001"><ele>402.37</ele></trkpt>
+   <trkpt lat="23.561873336168865" lon="120.57498666918815"><ele>409.12</ele></trkpt>
+   <trkpt lat="23.561626669495464" lon="120.57565333587299"><ele>414.88</ele></trkpt>
+   <trkpt lat="23.561380000000003" lon="120.57632000000001"><ele>418.75</ele></trkpt>
+   <trkpt lat="23.56124" lon="120.57654000000001"><ele>420.34</ele></trkpt>
+   <trkpt lat="23.561030000000002" lon="120.57673000000001"><ele>422.3</ele></trkpt>
+   <trkpt lat="23.560440000000003" lon="120.57703000000001"><ele>427.55</ele></trkpt>
+   <trkpt lat="23.560260000000003" lon="120.57710000000002"><ele>429.63</ele></trkpt>
+   <trkpt lat="23.55965" lon="120.57722000000001"><ele>433.93</ele></trkpt>
+   <trkpt lat="23.559540000000002" lon="120.57728000000002"><ele>435.18</ele></trkpt>
+   <trkpt lat="23.559400000000004" lon="120.57741000000001"><ele>436.07</ele></trkpt>
+   <trkpt lat="23.55927" lon="120.57758000000001"><ele>436.66</ele></trkpt>
+   <trkpt lat="23.55918" lon="120.57791"><ele>436.9</ele></trkpt>
+   <trkpt lat="23.559070000000002" lon="120.57867000000002"><ele>436.64</ele></trkpt>
+   <trkpt lat="23.559050000000003" lon="120.57896000000001"><ele>436.03</ele></trkpt>
+   <trkpt lat="23.559050000000003" lon="120.57946000000001"><ele>438.46</ele></trkpt>
+   <trkpt lat="23.5591" lon="120.57970000000002"><ele>439.98</ele></trkpt>
+   <trkpt lat="23.55918" lon="120.57983000000002"><ele>440.61</ele></trkpt>
+   <trkpt lat="23.55993" lon="120.58031000000001"><ele>447.13</ele></trkpt>
+   <trkpt lat="23.560010000000002" lon="120.58044000000001"><ele>447.57</ele></trkpt>
+   <trkpt lat="23.560000000000002" lon="120.58062000000001"><ele>448.56</ele></trkpt>
+   <trkpt lat="23.55984" lon="120.58084000000001"><ele>449.95</ele></trkpt>
+   <trkpt lat="23.559820000000002" lon="120.58092"><ele>449.95</ele></trkpt>
+   <trkpt lat="23.55986" lon="120.58119"><ele>451.42</ele></trkpt>
+   <trkpt lat="23.559910000000002" lon="120.58132"><ele>452.6</ele></trkpt>
+   <trkpt lat="23.560000000000002" lon="120.58140000000002"><ele>452.6</ele></trkpt>
+   <trkpt lat="23.56011" lon="120.58140000000002"><ele>453.20</ele></trkpt>
+   <trkpt lat="23.560280000000002" lon="120.58129000000001"><ele>453.98</ele></trkpt>
+   <trkpt lat="23.560340000000004" lon="120.58127"><ele>454.15</ele></trkpt>
+   <trkpt lat="23.56041" lon="120.58127"><ele>454.35</ele></trkpt>
+   <trkpt lat="23.56051" lon="120.58133000000001"><ele>455.11</ele></trkpt>
+   <trkpt lat="23.560550000000003" lon="120.58139000000001"><ele>455.43</ele></trkpt>
+   <trkpt lat="23.560550000000003" lon="120.58163"><ele>458.24</ele></trkpt>
+   <trkpt lat="23.5605" lon="120.58173000000001"><ele>458.24</ele></trkpt>
+   <trkpt lat="23.560440000000003" lon="120.58177"><ele>459.98</ele></trkpt>
+   <trkpt lat="23.560380000000002" lon="120.58179000000001"><ele>461.11</ele></trkpt>
+   <trkpt lat="23.560080000000003" lon="120.58176000000002"><ele>464.18</ele></trkpt>
+   <trkpt lat="23.55983" lon="120.58177"><ele>466.89</ele></trkpt>
+   <trkpt lat="23.559700000000003" lon="120.58183000000001"><ele>468.42</ele></trkpt>
+   <trkpt lat="23.55964" lon="120.58194"><ele>469.74</ele></trkpt>
+   <trkpt lat="23.55965" lon="120.58206000000001"><ele>470.44</ele></trkpt>
+   <trkpt lat="23.55977" lon="120.58224000000001"><ele>472.01</ele></trkpt>
+   <trkpt lat="23.559870000000004" lon="120.58233000000001"><ele>473.34</ele></trkpt>
+   <trkpt lat="23.560060000000004" lon="120.58243000000002"><ele>474.74</ele></trkpt>
+   <trkpt lat="23.56012" lon="120.58253"><ele>475.12</ele></trkpt>
+   <trkpt lat="23.560090000000002" lon="120.58262"><ele>476.36</ele></trkpt>
+   <trkpt lat="23.56004" lon="120.58265000000002"><ele>476.36</ele></trkpt>
+   <trkpt lat="23.559700000000003" lon="120.58268000000001"><ele>479.49</ele></trkpt>
+   <trkpt lat="23.55964" lon="120.58271"><ele>479.49</ele></trkpt>
+   <trkpt lat="23.559620000000002" lon="120.5828"><ele>479.49</ele></trkpt>
+   <trkpt lat="23.55968" lon="120.58287000000001"><ele>481.73</ele></trkpt>
+   <trkpt lat="23.559910000000002" lon="120.58294000000001"><ele>483.31</ele></trkpt>
+   <trkpt lat="23.560000000000002" lon="120.58301000000002"><ele>483.98</ele></trkpt>
+   <trkpt lat="23.56004" lon="120.58309000000001"><ele>484.35</ele></trkpt>
+   <trkpt lat="23.56004" lon="120.58329"><ele>486.46</ele></trkpt>
+   <trkpt lat="23.55996" lon="120.58381000000001"><ele>489.84</ele></trkpt>
+   <trkpt lat="23.55994" lon="120.58412000000001"><ele>492.88</ele></trkpt>
+   <trkpt lat="23.559910000000002" lon="120.58418"><ele>493.52</ele></trkpt>
+   <trkpt lat="23.55983" lon="120.58419"><ele>494.68</ele></trkpt>
+   <trkpt lat="23.559790000000003" lon="120.58417000000001"><ele>495.16</ele></trkpt>
+   <trkpt lat="23.55977" lon="120.584"><ele>496.63</ele></trkpt>
+   <trkpt lat="23.55985" lon="120.58375000000001"><ele>498.17</ele></trkpt>
+   <trkpt lat="23.55986" lon="120.58364000000002"><ele>498.64</ele></trkpt>
+   <trkpt lat="23.55983" lon="120.58349000000001"><ele>499.63</ele></trkpt>
+   <trkpt lat="23.559700000000003" lon="120.58339000000001"><ele>499.63</ele></trkpt>
+   <trkpt lat="23.55956" lon="120.58332000000001"><ele>501.06</ele></trkpt>
+   <trkpt lat="23.55946" lon="120.58331000000001"><ele>501.06</ele></trkpt>
+   <trkpt lat="23.559430000000003" lon="120.58333"><ele>501.27</ele></trkpt>
+   <trkpt lat="23.55938" lon="120.58341000000001"><ele>501.77</ele></trkpt>
+   <trkpt lat="23.55938" lon="120.58346000000002"><ele>501.77</ele></trkpt>
+   <trkpt lat="23.559420000000003" lon="120.58350000000002"><ele>502.6</ele></trkpt>
+   <trkpt lat="23.559610000000003" lon="120.5836"><ele>503.92</ele></trkpt>
+   <trkpt lat="23.55966" lon="120.58368000000002"><ele>503.92</ele></trkpt>
+   <trkpt lat="23.55966" lon="120.58374"><ele>503.92</ele></trkpt>
+   <trkpt lat="23.55955" lon="120.58392"><ele>507.63</ele></trkpt>
+   <trkpt lat="23.559530000000002" lon="120.58403000000001"><ele>507.63</ele></trkpt>
+   <trkpt lat="23.559520000000003" lon="120.58419"><ele>508.64</ele></trkpt>
+   <trkpt lat="23.55956" lon="120.58448000000001"><ele>510.27</ele></trkpt>
+   <trkpt lat="23.559630000000002" lon="120.58461000000001"><ele>510.67</ele></trkpt>
+   <trkpt lat="23.559780000000003" lon="120.58471000000002"><ele>511.63</ele></trkpt>
+   <trkpt lat="23.559890000000003" lon="120.58481"><ele>512.69</ele></trkpt>
+   <trkpt lat="23.55994" lon="120.58493000000001"><ele>513.67</ele></trkpt>
+   <trkpt lat="23.55992" lon="120.58500000000001"><ele>513.67</ele></trkpt>
+   <trkpt lat="23.559890000000003" lon="120.58503"><ele>513.67</ele></trkpt>
+   <trkpt lat="23.55983" lon="120.58505000000001"><ele>515.16</ele></trkpt>
+   <trkpt lat="23.55975" lon="120.58504"><ele>515.16</ele></trkpt>
+   <trkpt lat="23.559610000000003" lon="120.58491000000001"><ele>516.9</ele></trkpt>
+   <trkpt lat="23.559500000000003" lon="120.58477"><ele>518.74</ele></trkpt>
+   <trkpt lat="23.559340000000002" lon="120.58449000000002"><ele>519.43</ele></trkpt>
+   <trkpt lat="23.55919" lon="120.58411000000001"><ele>523.05</ele></trkpt>
+   <trkpt lat="23.55911" lon="120.58406000000001"><ele>523.66</ele></trkpt>
+   <trkpt lat="23.559050000000003" lon="120.58408000000001"><ele>524.01</ele></trkpt>
+   <trkpt lat="23.55901" lon="120.58414"><ele>524.79</ele></trkpt>
+   <trkpt lat="23.55901" lon="120.58421000000001"><ele>524.79</ele></trkpt>
+   <trkpt lat="23.559160000000002" lon="120.5845"><ele>528.57</ele></trkpt>
+   <trkpt lat="23.559350000000002" lon="120.58515000000001"><ele>532.89</ele></trkpt>
+   <trkpt lat="23.559690000000003" lon="120.58581000000001"><ele>537.45</ele></trkpt>
+   <trkpt lat="23.559690000000003" lon="120.58590000000001"><ele>538.32</ele></trkpt>
+   <trkpt lat="23.559620000000002" lon="120.58599000000001"><ele>539.06</ele></trkpt>
+   <trkpt lat="23.559500000000003" lon="120.58601000000002"><ele>539.46</ele></trkpt>
+   <trkpt lat="23.55947" lon="120.58598"><ele>541.14</ele></trkpt>
+   <trkpt lat="23.559430000000003" lon="120.58559000000001"><ele>543.28</ele></trkpt>
+   <trkpt lat="23.559220000000003" lon="120.58534000000002"><ele>545.28</ele></trkpt>
+   <trkpt lat="23.55892" lon="120.58467000000002"><ele>549.84</ele></trkpt>
+   <trkpt lat="23.5588" lon="120.58454"><ele>550.4</ele></trkpt>
+   <trkpt lat="23.55854" lon="120.58451000000001"><ele>552.55</ele></trkpt>
+   <trkpt lat="23.55845" lon="120.58454"><ele>553.25</ele></trkpt>
+   <trkpt lat="23.558310000000002" lon="120.58466000000001"><ele>554.84</ele></trkpt>
+   <trkpt lat="23.55817" lon="120.58482000000001"><ele>555.97</ele></trkpt>
+   <trkpt lat="23.55806" lon="120.58500000000001"><ele>558.09</ele></trkpt>
+   <trkpt lat="23.558020000000003" lon="120.58504"><ele>558.76</ele></trkpt>
+   <trkpt lat="23.557920000000003" lon="120.58509000000001"><ele>559.74</ele></trkpt>
+   <trkpt lat="23.55779" lon="120.58513"><ele>560.42</ele></trkpt>
+   <trkpt lat="23.557660000000002" lon="120.58521"><ele>561.51</ele></trkpt>
+   <trkpt lat="23.557370000000002" lon="120.58560000000001"><ele>565.58</ele></trkpt>
+   <trkpt lat="23.55712" lon="120.58576000000001"><ele>566.82</ele></trkpt>
+   <trkpt lat="23.55705" lon="120.58587000000001"><ele>568.52</ele></trkpt>
+   <trkpt lat="23.557070000000003" lon="120.58594000000001"><ele>568.52</ele></trkpt>
+   <trkpt lat="23.557170000000003" lon="120.58598"><ele>569.14</ele></trkpt>
+   <trkpt lat="23.557340000000003" lon="120.58594000000001"><ele>570.68</ele></trkpt>
+   <trkpt lat="23.557660000000002" lon="120.58572000000001"><ele>574.0</ele></trkpt>
+   <trkpt lat="23.55795" lon="120.58542000000001"><ele>578.37</ele></trkpt>
+   <trkpt lat="23.55805" lon="120.58537000000001"><ele>579.43</ele></trkpt>
+   <trkpt lat="23.558110000000003" lon="120.58536000000001"><ele>579.43</ele></trkpt>
+   <trkpt lat="23.55835" lon="120.58551000000001"><ele>581.37</ele></trkpt>
+   <trkpt lat="23.55845" lon="120.58564000000001"><ele>582.56</ele></trkpt>
+   <trkpt lat="23.55854" lon="120.58608000000001"><ele>585.69</ele></trkpt>
+   <trkpt lat="23.55872" lon="120.58643000000001"><ele>588.54</ele></trkpt>
+   <trkpt lat="23.55872" lon="120.5866"><ele>589.35</ele></trkpt>
+   <trkpt lat="23.558650000000004" lon="120.58686000000002"><ele>592.85</ele></trkpt>
+   <trkpt lat="23.558670000000003" lon="120.58696"><ele>593.42</ele></trkpt>
+   <trkpt lat="23.55872" lon="120.58711000000001"><ele>593.42</ele></trkpt>
+   <trkpt lat="23.558780000000002" lon="120.58722000000002"><ele>594.67</ele></trkpt>
+   <trkpt lat="23.55891" lon="120.58735000000001"><ele>596.00</ele></trkpt>
+   <trkpt lat="23.559040000000003" lon="120.58739000000001"><ele>596.76</ele></trkpt>
+   <trkpt lat="23.55957" lon="120.58741"><ele>600.15</ele></trkpt>
+   <trkpt lat="23.55992" lon="120.58734000000001"><ele>603.6</ele></trkpt>
+   <trkpt lat="23.560150000000004" lon="120.58724000000001"><ele>604.95</ele></trkpt>
+   <trkpt lat="23.560260000000003" lon="120.58724000000001"><ele>605.8</ele></trkpt>
+   <trkpt lat="23.56033" lon="120.58726000000001"><ele>606.46</ele></trkpt>
+   <trkpt lat="23.560370000000002" lon="120.58733000000001"><ele>607.29</ele></trkpt>
+   <trkpt lat="23.560370000000002" lon="120.5875"><ele>607.74</ele></trkpt>
+   <trkpt lat="23.5603" lon="120.58769000000001"><ele>610.5</ele></trkpt>
+   <trkpt lat="23.5603" lon="120.58793000000001"><ele>612.13</ele></trkpt>
+   <trkpt lat="23.56039" lon="120.58808"><ele>613.1</ele></trkpt>
+   <trkpt lat="23.5606" lon="120.58823000000001"><ele>614.22</ele></trkpt>
+   <trkpt lat="23.56069" lon="120.58836000000001"><ele>615.58</ele></trkpt>
+   <trkpt lat="23.56078" lon="120.58864000000001"><ele>619.00</ele></trkpt>
+   <trkpt lat="23.56078" lon="120.58902"><ele>621.52</ele></trkpt>
+   <trkpt lat="23.5608" lon="120.58919000000002"><ele>622.53</ele></trkpt>
+   <trkpt lat="23.56088" lon="120.58932000000001"><ele>622.53</ele></trkpt>
+   <trkpt lat="23.561010000000003" lon="120.58941000000002"><ele>623.79</ele></trkpt>
+   <trkpt lat="23.561230000000002" lon="120.58947"><ele>626.54</ele></trkpt>
+   <trkpt lat="23.56133" lon="120.58947"><ele>626.54</ele></trkpt>
+   <trkpt lat="23.561660000000003" lon="120.58924"><ele>629.40</ele></trkpt>
+   <trkpt lat="23.561890000000002" lon="120.58917000000001"><ele>631.5</ele></trkpt>
+   <trkpt lat="23.56211" lon="120.58898"><ele>633.42</ele></trkpt>
+   <trkpt lat="23.56228" lon="120.58889"><ele>634.53</ele></trkpt>
+   <trkpt lat="23.562700000000003" lon="120.58857"><ele>639.62</ele></trkpt>
+   <trkpt lat="23.56287" lon="120.58850000000001"><ele>641.02</ele></trkpt>
+   <trkpt lat="23.563080000000003" lon="120.58850000000001"><ele>641.68</ele></trkpt>
+   <trkpt lat="23.563160000000003" lon="120.58853"><ele>642.63</ele></trkpt>
+   <trkpt lat="23.563270000000003" lon="120.58861000000002"><ele>644.1</ele></trkpt>
+   <trkpt lat="23.56331" lon="120.58868000000001"><ele>644.1</ele></trkpt>
+   <trkpt lat="23.56342" lon="120.58930000000001"><ele>650.99</ele></trkpt>
+   <trkpt lat="23.5635" lon="120.58958000000001"><ele>653.76</ele></trkpt>
+   <trkpt lat="23.56361" lon="120.58971000000001"><ele>655.06</ele></trkpt>
+   <trkpt lat="23.563910000000003" lon="120.58997000000001"><ele>657.06</ele></trkpt>
+   <trkpt lat="23.563950000000002" lon="120.59003000000001"><ele>657.39</ele></trkpt>
+   <trkpt lat="23.564000000000004" lon="120.59020000000001"><ele>659.1</ele></trkpt>
+   <trkpt lat="23.564000000000004" lon="120.59057000000001"><ele>662.37</ele></trkpt>
+   <trkpt lat="23.56397" lon="120.59070000000001"><ele>664.67</ele></trkpt>
+   <trkpt lat="23.563910000000003" lon="120.59073000000001"><ele>665.78</ele></trkpt>
+   <trkpt lat="23.563840000000003" lon="120.59073000000001"><ele>666.76</ele></trkpt>
+   <trkpt lat="23.5638" lon="120.59066000000001"><ele>667.2</ele></trkpt>
+   <trkpt lat="23.56378" lon="120.59056000000001"><ele>667.98</ele></trkpt>
+   <trkpt lat="23.563820000000003" lon="120.59029000000001"><ele>669.13</ele></trkpt>
+   <trkpt lat="23.56378" lon="120.59022000000002"><ele>670.55</ele></trkpt>
+   <trkpt lat="23.56369" lon="120.59022000000002"><ele>670.55</ele></trkpt>
+   <trkpt lat="23.563650000000003" lon="120.59025000000001"><ele>670.55</ele></trkpt>
+   <trkpt lat="23.56359" lon="120.59061000000001"><ele>672.85</ele></trkpt>
+   <trkpt lat="23.56359" lon="120.59072"><ele>673.90</ele></trkpt>
+   <trkpt lat="23.563720000000004" lon="120.59089000000002"><ele>675.35</ele></trkpt>
+   <trkpt lat="23.56387" lon="120.59098000000002"><ele>677.33</ele></trkpt>
+   <trkpt lat="23.563910000000003" lon="120.59102000000001"><ele>677.33</ele></trkpt>
+   <trkpt lat="23.56408" lon="120.5913"><ele>680.46</ele></trkpt>
+   <trkpt lat="23.56434" lon="120.59160000000001"><ele>684.11</ele></trkpt>
+   <trkpt lat="23.564470000000004" lon="120.59211"><ele>689.07</ele></trkpt>
+   <trkpt lat="23.564470000000004" lon="120.5922"><ele>689.07</ele></trkpt>
+   <trkpt lat="23.564380000000003" lon="120.59229"><ele>691.37</ele></trkpt>
+   <trkpt lat="23.56427" lon="120.5922"><ele>692.58</ele></trkpt>
+   <trkpt lat="23.564210000000003" lon="120.59190000000001"><ele>695.07</ele></trkpt>
+   <trkpt lat="23.564120000000003" lon="120.59173000000001"><ele>696.30</ele></trkpt>
+   <trkpt lat="23.56397" lon="120.59160000000001"><ele>697.39</ele></trkpt>
+   <trkpt lat="23.563270000000003" lon="120.59119000000001"><ele>707.23</ele></trkpt>
+   <trkpt lat="23.56314" lon="120.59109000000001"><ele>708.67</ele></trkpt>
+   <trkpt lat="23.56305" lon="120.59095"><ele>710.26</ele></trkpt>
+   <trkpt lat="23.56302" lon="120.59084000000001"><ele>710.93</ele></trkpt>
+   <trkpt lat="23.56296" lon="120.59056000000001"><ele>713.19</ele></trkpt>
+   <trkpt lat="23.562920000000002" lon="120.59017000000001"><ele>714.89</ele></trkpt>
+   <trkpt lat="23.562880000000003" lon="120.59008000000001"><ele>714.89</ele></trkpt>
+   <trkpt lat="23.562790000000003" lon="120.58998000000001"><ele>717.89</ele></trkpt>
+   <trkpt lat="23.562730000000002" lon="120.58996"><ele>717.89</ele></trkpt>
+   <trkpt lat="23.562620000000003" lon="120.58996"><ele>717.89</ele></trkpt>
+   <trkpt lat="23.56258" lon="120.58998000000001"><ele>718.55</ele></trkpt>
+   <trkpt lat="23.562530000000002" lon="120.59006000000001"><ele>718.55</ele></trkpt>
+   <trkpt lat="23.562530000000002" lon="120.59013000000002"><ele>719.94</ele></trkpt>
+   <trkpt lat="23.562720000000002" lon="120.59051000000001"><ele>723.87</ele></trkpt>
+   <trkpt lat="23.562790000000003" lon="120.59072"><ele>724.76</ele></trkpt>
+   <trkpt lat="23.562820000000002" lon="120.59087000000001"><ele>726.46</ele></trkpt>
+   <trkpt lat="23.562820000000002" lon="120.59119000000001"><ele>729.01</ele></trkpt>
+   <trkpt lat="23.56303" lon="120.59175"><ele>733.19</ele></trkpt>
+   <trkpt lat="23.563090000000003" lon="120.59181000000001"><ele>733.87</ele></trkpt>
+   <trkpt lat="23.563480000000002" lon="120.59192000000002"><ele>736.75</ele></trkpt>
+   <trkpt lat="23.56361" lon="120.59201000000002"><ele>737.77</ele></trkpt>
+   <trkpt lat="23.563730000000003" lon="120.59215"><ele>739.33</ele></trkpt>
+   <trkpt lat="23.563760000000002" lon="120.59224"><ele>740.6</ele></trkpt>
+   <trkpt lat="23.563760000000002" lon="120.59232000000002"><ele>740.6</ele></trkpt>
+   <trkpt lat="23.563730000000003" lon="120.59239000000001"><ele>741.5</ele></trkpt>
+   <trkpt lat="23.563670000000002" lon="120.59243000000001"><ele>741.5</ele></trkpt>
+   <trkpt lat="23.563630000000003" lon="120.59241000000002"><ele>743.51</ele></trkpt>
+   <trkpt lat="23.563470000000002" lon="120.59216"><ele>745.09</ele></trkpt>
+   <trkpt lat="23.563390000000002" lon="120.59209000000001"><ele>746.06</ele></trkpt>
+   <trkpt lat="23.563200000000002" lon="120.59205000000001"><ele>747.19</ele></trkpt>
+   <trkpt lat="23.563000000000002" lon="120.59209000000001"><ele>748.49</ele></trkpt>
+   <trkpt lat="23.562890000000003" lon="120.59208000000001"><ele>749.07</ele></trkpt>
+   <trkpt lat="23.562810000000002" lon="120.59201000000002"><ele>750.12</ele></trkpt>
+   <trkpt lat="23.562720000000002" lon="120.5918"><ele>752.40</ele></trkpt>
+   <trkpt lat="23.56265" lon="120.59172000000001"><ele>752.75</ele></trkpt>
+   <trkpt lat="23.56258" lon="120.59168000000001"><ele>753.37</ele></trkpt>
+   <trkpt lat="23.56239" lon="120.59165000000002"><ele>754.75</ele></trkpt>
+   <trkpt lat="23.56229" lon="120.59156000000002"><ele>755.28</ele></trkpt>
+   <trkpt lat="23.562220000000003" lon="120.59145000000001"><ele>755.28</ele></trkpt>
+   <trkpt lat="23.562140000000003" lon="120.59107000000002"><ele>757.12</ele></trkpt>
+   <trkpt lat="23.562050000000003" lon="120.59100000000001"><ele>758.86</ele></trkpt>
+   <trkpt lat="23.561970000000002" lon="120.59102000000001"><ele>758.86</ele></trkpt>
+   <trkpt lat="23.561950000000003" lon="120.59107000000002"><ele>759.82</ele></trkpt>
+   <trkpt lat="23.561970000000002" lon="120.59126"><ele>760.84</ele></trkpt>
+   <trkpt lat="23.56236" lon="120.59211"><ele>768.44</ele></trkpt>
+   <trkpt lat="23.56256" lon="120.59270000000001"><ele>773.46</ele></trkpt>
+   <trkpt lat="23.56267" lon="120.59289000000001"><ele>775.2</ele></trkpt>
+   <trkpt lat="23.563010000000002" lon="120.59326000000001"><ele>779.17</ele></trkpt>
+   <trkpt lat="23.56303" lon="120.59330000000001"><ele>779.17</ele></trkpt>
+   <trkpt lat="23.563010000000002" lon="120.59343000000001"><ele>780.26</ele></trkpt>
+   <trkpt lat="23.562970000000004" lon="120.59347000000001"><ele>780.26</ele></trkpt>
+   <trkpt lat="23.56284" lon="120.59349000000002"><ele>781.06</ele></trkpt>
+   <trkpt lat="23.562710000000003" lon="120.59347000000001"><ele>782.78</ele></trkpt>
+   <trkpt lat="23.562140000000003" lon="120.59324000000001"><ele>788.99</ele></trkpt>
+   <trkpt lat="23.562050000000003" lon="120.59306000000001"><ele>788.99</ele></trkpt>
+   <trkpt lat="23.562030000000004" lon="120.59274"><ele>792.7</ele></trkpt>
+   <trkpt lat="23.56199" lon="120.59264"><ele>793.35</ele></trkpt>
+   <trkpt lat="23.56171" lon="120.59242"><ele>795.51</ele></trkpt>
+   <trkpt lat="23.561470000000003" lon="120.59203000000001"><ele>797.91</ele></trkpt>
+   <trkpt lat="23.561410000000002" lon="120.59197"><ele>797.91</ele></trkpt>
+   <trkpt lat="23.56134" lon="120.59193"><ele>798.86</ele></trkpt>
+   <trkpt lat="23.561200000000003" lon="120.59196000000001"><ele>799.3</ele></trkpt>
+   <trkpt lat="23.56118" lon="120.59202"><ele>799.3</ele></trkpt>
+   <trkpt lat="23.561200000000003" lon="120.59209000000001"><ele>799.67</ele></trkpt>
+   <trkpt lat="23.56146" lon="120.59231000000001"><ele>801.16</ele></trkpt>
+   <trkpt lat="23.56165" lon="120.59259000000002"><ele>803.82</ele></trkpt>
+   <trkpt lat="23.56173" lon="120.59274"><ele>805.50</ele></trkpt>
+   <trkpt lat="23.561750000000004" lon="120.59291"><ele>807.02</ele></trkpt>
+   <trkpt lat="23.561780000000002" lon="120.59370000000001"><ele>812.25</ele></trkpt>
+   <trkpt lat="23.56173" lon="120.59387000000001"><ele>814.11</ele></trkpt>
+   <trkpt lat="23.561690000000002" lon="120.59393000000001"><ele>814.11</ele></trkpt>
+   <trkpt lat="23.561470000000003" lon="120.59411000000001"><ele>815.48</ele></trkpt>
+   <trkpt lat="23.56145" lon="120.59415000000001"><ele>816.21</ele></trkpt>
+   <trkpt lat="23.56145" lon="120.59421"><ele>816.21</ele></trkpt>
+   <trkpt lat="23.561490000000003" lon="120.59428000000001"><ele>816.66</ele></trkpt>
+   <trkpt lat="23.561560000000004" lon="120.5943"><ele>817.29</ele></trkpt>
+   <trkpt lat="23.561880000000002" lon="120.59415000000001"><ele>818.90</ele></trkpt>
+   <trkpt lat="23.562" lon="120.59417"><ele>820.1</ele></trkpt>
+   <trkpt lat="23.56236" lon="120.59449000000001"><ele>825.26</ele></trkpt>
+   <trkpt lat="23.562450000000002" lon="120.59454000000001"><ele>826.04</ele></trkpt>
+   <trkpt lat="23.56276" lon="120.59460000000001"><ele>827.79</ele></trkpt>
+   <trkpt lat="23.56284" lon="120.59464000000001"><ele>829.38</ele></trkpt>
+   <trkpt lat="23.56287" lon="120.59468000000001"><ele>829.38</ele></trkpt>
+   <trkpt lat="23.56287" lon="120.59475"><ele>829.38</ele></trkpt>
+   <trkpt lat="23.562800000000003" lon="120.59482000000001"><ele>830.35</ele></trkpt>
+   <trkpt lat="23.562420000000003" lon="120.59465000000002"><ele>834.17</ele></trkpt>
+   <trkpt lat="23.562130000000003" lon="120.59456000000002"><ele>836.68</ele></trkpt>
+   <trkpt lat="23.56202" lon="120.59456000000002"><ele>837.81</ele></trkpt>
+   <trkpt lat="23.561940000000003" lon="120.59462"><ele>838.13</ele></trkpt>
+   <trkpt lat="23.561700000000002" lon="120.59518000000001"><ele>843.4</ele></trkpt>
+   <trkpt lat="23.561660000000003" lon="120.59537000000002"><ele>844.18</ele></trkpt>
+   <trkpt lat="23.56163" lon="120.596"><ele>850.07</ele></trkpt>
+   <trkpt lat="23.561580000000003" lon="120.59609"><ele>850.34</ele></trkpt>
+   <trkpt lat="23.56144" lon="120.59623"><ele>851.59</ele></trkpt>
+   <trkpt lat="23.561420000000002" lon="120.59628000000001"><ele>851.90</ele></trkpt>
+   <trkpt lat="23.561420000000002" lon="120.59634000000001"><ele>851.90</ele></trkpt>
+   <trkpt lat="23.561470000000003" lon="120.59641"><ele>852.90</ele></trkpt>
+   <trkpt lat="23.561590000000002" lon="120.59639000000001"><ele>853.45</ele></trkpt>
+   <trkpt lat="23.56172" lon="120.59623"><ele>854.51</ele></trkpt>
+   <trkpt lat="23.561870000000003" lon="120.59557000000001"><ele>859.16</ele></trkpt>
+   <trkpt lat="23.56192" lon="120.59547"><ele>859.16</ele></trkpt>
+   <trkpt lat="23.561980000000002" lon="120.59541000000002"><ele>859.79</ele></trkpt>
+   <trkpt lat="23.56219" lon="120.59531000000001"><ele>861.12</ele></trkpt>
+   <trkpt lat="23.56239" lon="120.59515"><ele>863.14</ele></trkpt>
+   <trkpt lat="23.562450000000002" lon="120.59515"><ele>863.14</ele></trkpt>
+   <trkpt lat="23.562500000000004" lon="120.59517000000001"><ele>864.1</ele></trkpt>
+   <trkpt lat="23.562520000000003" lon="120.59522000000001"><ele>864.1</ele></trkpt>
+   <trkpt lat="23.56248" lon="120.59532000000002"><ele>864.76</ele></trkpt>
+   <trkpt lat="23.562040000000003" lon="120.59555"><ele>868.11</ele></trkpt>
+   <trkpt lat="23.562" lon="120.59567000000001"><ele>869.17</ele></trkpt>
+   <trkpt lat="23.561970000000002" lon="120.59632"><ele>874.79</ele></trkpt>
+   <trkpt lat="23.56193" lon="120.59641"><ele>874.79</ele></trkpt>
+   <trkpt lat="23.56183" lon="120.59655000000001"><ele>877.65</ele></trkpt>
+   <trkpt lat="23.56183" lon="120.59666000000001"><ele>878.47</ele></trkpt>
+   <trkpt lat="23.561870000000003" lon="120.59670000000001"><ele>878.8</ele></trkpt>
+   <trkpt lat="23.562" lon="120.59668"><ele>879.40</ele></trkpt>
+   <trkpt lat="23.562040000000003" lon="120.59664000000001"><ele>879.40</ele></trkpt>
+   <trkpt lat="23.562160000000002" lon="120.59619"><ele>881.18</ele></trkpt>
+   <trkpt lat="23.562450000000002" lon="120.59571000000001"><ele>884.94</ele></trkpt>
+   <trkpt lat="23.562590000000004" lon="120.59559000000002"><ele>885.84</ele></trkpt>
+   <trkpt lat="23.56265" lon="120.59559000000002"><ele>885.84</ele></trkpt>
+   <trkpt lat="23.562720000000002" lon="120.59566000000001"><ele>886.55</ele></trkpt>
+   <trkpt lat="23.56274" lon="120.59574"><ele>888.45</ele></trkpt>
+   <trkpt lat="23.56255" lon="120.59592"><ele>889.6</ele></trkpt>
+   <trkpt lat="23.562540000000002" lon="120.59593000000001"><ele>889.6</ele></trkpt>
+   <trkpt lat="23.562320000000003" lon="120.59617000000001"><ele>891.66</ele></trkpt>
+   <trkpt lat="23.562340000000003" lon="120.59625000000001"><ele>892.12</ele></trkpt>
+   <trkpt lat="23.56239" lon="120.59627"><ele>892.12</ele></trkpt>
+   <trkpt lat="23.56247" lon="120.59623"><ele>892.12</ele></trkpt>
+   <trkpt lat="23.56284" lon="120.59580000000001"><ele>895.77</ele></trkpt>
+   <trkpt lat="23.56295" lon="120.59578"><ele>896.37</ele></trkpt>
+   <trkpt lat="23.563010000000002" lon="120.59582"><ele>896.72</ele></trkpt>
+   <trkpt lat="23.563010000000002" lon="120.59591"><ele>897.09</ele></trkpt>
+   <trkpt lat="23.562800000000003" lon="120.59603000000001"><ele>899.83</ele></trkpt>
+   <trkpt lat="23.56249" lon="120.59643000000001"><ele>903.40</ele></trkpt>
+   <trkpt lat="23.562420000000003" lon="120.59656000000001"><ele>905.17</ele></trkpt>
+   <trkpt lat="23.56228" lon="120.59695"><ele>910.81</ele></trkpt>
+   <trkpt lat="23.56221" lon="120.59704"><ele>910.81</ele></trkpt>
+   <trkpt lat="23.562030000000004" lon="120.59720000000002"><ele>912.75</ele></trkpt>
+   <trkpt lat="23.56152" lon="120.59743"><ele>919.44</ele></trkpt>
+   <trkpt lat="23.56124" lon="120.59743"><ele>922.6</ele></trkpt>
+   <trkpt lat="23.560940000000002" lon="120.59734000000002"><ele>926.68</ele></trkpt>
+   <trkpt lat="23.560830000000003" lon="120.59729000000002"><ele>926.68</ele></trkpt>
+   <trkpt lat="23.56068" lon="120.59728000000001"><ele>928.55</ele></trkpt>
+   <trkpt lat="23.56039" lon="120.59735"><ele>930.55</ele></trkpt>
+   <trkpt lat="23.560090000000002" lon="120.59761"><ele>931.28</ele></trkpt>
+   <trkpt lat="23.559820000000002" lon="120.59798"><ele>931.36</ele></trkpt>
+   <trkpt lat="23.559880000000003" lon="120.59790000000001"><ele>931.28</ele></trkpt>
+ </trkseg></trk>
+</gpx>`;
+
+    // 解析 GPX 並自動裁切出「西門大將軍 (23.56666, 120.57362)」至「太平36彎終點」區段
+    const gpxDoc = new DOMParser().parseFromString(rawStravaGPX, 'application/xml');
+    const allTrkpts = Array.from(gpxDoc.getElementsByTagName('trkpt')).map(pt => ({
+      lat: parseFloat(pt.getAttribute('lat')),
+      lon: parseFloat(pt.getAttribute('lon')),
+      ele: parseFloat(pt.getElementsByTagName('ele')[0]?.textContent || '326')
+    }));
+
+    // 精準比對「西門大將軍」實景位置（過梅山茶花園髮夾彎出口、下切往半天寮橋起點）
+    const XIMEN_TARGET = { lat: 23.56666, lon: 120.57362 };
+    let ximenStartIdx = 0;
+    let bestStartDist = Infinity;
+    allTrkpts.forEach((pt, idx) => {
+      const d = Math.hypot(pt.lat - XIMEN_TARGET.lat, pt.lon - XIMEN_TARGET.lon);
+      if (d < bestStartDist) {
+        bestStartDist = d;
+        ximenStartIdx = idx;
+      }
+    });
+
+    // 保留從西門大將軍到 GPX 終點的完整軌跡（並移除最後一個回頭微幅重複點）
+    let slicedGpx = allTrkpts.slice(ximenStartIdx);
+    if (slicedGpx.length > 2) {
+      const last = slicedGpx[slicedGpx.length - 1];
+      const prev = slicedGpx[slicedGpx.length - 2];
+      if (Math.hypot(last.lat - prev.lat, last.lon - prev.lon) < 0.00015) {
+        slicedGpx.pop();
+      }
+    }
+
+    // 1:1 真實地球公尺投影基準（以路線包圍盒中心為原點，北為 -Z、東為 +X）
+    const REF_LAT = 23.5628;
+    const REF_LON = 120.5853;
+    const METERS_PER_DEG_LAT = 111319.5;
+    const METERS_PER_DEG_LON = 111319.5 * Math.cos((REF_LAT * Math.PI) / 180);
+    const ELEV_SCALE = 1.0; // 真實 1:1 海拔高度比例
+    const BASE_ELEV = slicedGpx[0].ele;
+    const ROAD_HALF_WIDTH = 5.2;
+
+    function gpsToWorld(lat, lon, ele) {
+      const x = (lon - REF_LON) * METERS_PER_DEG_LON;
+      const z = -(lat - REF_LAT) * METERS_PER_DEG_LAT;
+      const y = (ele - BASE_ELEV) * ELEV_SCALE;
+      return new THREE.Vector3(x, y, z);
+    }
+
+    function worldToGps(x, z) {
+      return {
+        lon: x / METERS_PER_DEG_LON + REF_LON,
+        lat: -z / METERS_PER_DEG_LAT + REF_LAT
+      };
+    }
+
+    // 過濾過近重複採樣點（避免樣條微小抖動）並對氣壓計階梯高度進行 3 點平滑化
+    const cleanedGpx = [];
+    for (let i = 0; i < slicedGpx.length; i++) {
+      const cur = slicedGpx[i];
+      if (i === 0 || i === slicedGpx.length - 1) {
+        cleanedGpx.push({ ...cur });
+        continue;
+      }
+      const prev = cleanedGpx[cleanedGpx.length - 1];
+      const distM = Math.hypot(
+        (cur.lon - prev.lon) * METERS_PER_DEG_LON,
+        (cur.lat - prev.lat) * METERS_PER_DEG_LAT
+      );
+      if (distM >= 4.2) {
+        cleanedGpx.push({ ...cur });
+      }
+    }
+
+    for (let pass = 0; pass < 2; pass++) {
+      const prevEles = cleanedGpx.map(p => p.ele);
+      for (let i = 1; i < cleanedGpx.length - 1; i++) {
+        cleanedGpx[i].ele = prevEles[i - 1] * 0.25 + prevEles[i] * 0.5 + prevEles[i + 1] * 0.25;
+      }
+    }
+
+    // 實景地理座標地標定義（自動吸附至最近的 GPX 軌跡點）
+    const geoLandmarks = [
+      { lat: 23.56666, lon: 120.57362, text: '西門大將軍（起點 · 海拔 326m）' },
+      { lat: 23.56409, lon: 120.57571, text: '半天寮橋 / 九芎坑溪（海拔 346m）' },
+      { lat: 23.56336, lon: 120.57601, text: '清豐咖啡園北側彎道' },
+      { lat: 23.55918, lon: 120.57983, text: '南門大將軍廟（海拔 441m）' },
+      { lat: 23.56055, lon: 120.58163, text: '天馨樂活農莊路段' },
+      { lat: 23.55964, lon: 120.58271, text: '梅山夜景觀景點' },
+      { lat: 23.56327, lon: 120.58861, text: '進入三十六彎密集髮夾群' },
+      { lat: 23.56447, lon: 120.59220, text: '阿里山國家風景區牌坊' },
+      { lat: 23.56367, lon: 120.59243, text: '阿嬤咖啡彎道（海拔 742m）' },
+      { lat: 23.56195, lon: 120.59107, text: '梅山觀景臺（海拔 760m）' },
+      { lat: 23.56156, lon: 120.59430, text: '大坪登山古道入口' },
+      { lat: 23.56301, lon: 120.59582, text: '太平三十六彎展望點（第 36 彎）' },
+      { lat: 23.55982, lon: 120.59798, text: '太平三十六彎終點 · 太平雲梯入口（海拔 931m）' }
+    ];
+
+    const controlVectors = cleanedGpx.map(pt => gpsToWorld(pt.lat, pt.lon, pt.ele));
+    const trackCurve = new THREE.CatmullRomCurve3(controlVectors, false, 'centripetal', 0.45);
+
+    const NUM_SAMPLES = 2800;
+    const sampledPoints = trackCurve.getSpacedPoints(NUM_SAMPLES);
+    const roadSamples = [];
+    let totalTrackLength = 0;
+
+    for (let i = 0; i <= NUM_SAMPLES; i++) {
+      const pos = sampledPoints[i];
+      if (i > 0) {
+        totalTrackLength += pos.distanceTo(sampledPoints[i - 1]);
+      }
+
+      const prev = sampledPoints[Math.max(0, i - 1)];
+      const next = sampledPoints[Math.min(NUM_SAMPLES, i + 1)];
+      const tangent = new THREE.Vector3().subVectors(next, prev).normalize();
+      const flatTangent = new THREE.Vector3(tangent.x, 0, tangent.z).normalize();
+      const right = new THREE.Vector3(-flatTangent.z, 0, flatTangent.x).normalize();
+
+      // 計算水平曲率（以跨距 3 採樣點保持物理弧長一致，精準偵測急彎髮夾彎）
+      let curvature = 0;
+      if (i >= 3 && i <= NUM_SAMPLES - 3) {
+        const v1 = new THREE.Vector3().subVectors(sampledPoints[i], sampledPoints[i - 3]);
+        const v2 = new THREE.Vector3().subVectors(sampledPoints[i + 3], sampledPoints[i]);
+        v1.y = 0;
+        v2.y = 0;
+        const l1 = v1.length();
+        const l2 = v2.length();
+        if (l1 > 0.001 && l2 > 0.001) {
+          curvature = v1.divideScalar(l1).angleTo(v2.divideScalar(l2)) / ((l1 + l2) * 0.5);
+        }
+      }
+
+      const realElev = BASE_ELEV + pos.y / ELEV_SCALE;
+      const horizDist = Math.hypot(next.x - prev.x, next.z - prev.z);
+      const slopePct = horizDist > 0.01 ? ((next.y - prev.y) / ELEV_SCALE / horizDist) * 100 : 0;
+
+      roadSamples.push({
+        index: i,
+        t: i / NUM_SAMPLES,
+        dist: totalTrackLength,
+        pos,
+        tangent,
+        flatTangent,
+        right,
+        curvature,
+        realElev,
+        slopePct
+      });
+    }
+
+    // =========================================================================
+    // 3. 建立柏油路面、中線標線、路基擋土牆與智能過濾護欄
+    // =========================================================================
+    function createAsphaltTexture() {
+      const c = document.createElement('canvas');
+      c.width = 256;
+      c.height = 256;
+      const ctx = c.getContext('2d');
+
+      // 柏油底色
+      ctx.fillStyle = '#2b303a';
+      ctx.fillRect(0, 0, 256, 256);
+
+      // 細微柏油顆粒雜訊增強速度感
+      for (let i = 0; i < 2200; i++) {
+        const x = Math.random() * 256;
+        const y = Math.random() * 256;
+        const shade = 34 + Math.floor(Math.random() * 24);
+        ctx.fillStyle = `rgb(${shade},${shade + 3},${shade + 8})`;
+        ctx.fillRect(x, y, 2, 2);
+      }
+
+      // 道路左右兩側白色邊線
+      ctx.fillStyle = 'rgba(241, 245, 249, 0.85)';
+      ctx.fillRect(10, 0, 6, 256);
+      ctx.fillRect(240, 0, 6, 256);
+
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.anisotropy = 4;
+      return tex;
+    }
+
+    function buildRoadAndGuardrails() {
+      const roadPositions = [];
+      const roadNormals = [];
+      const roadUVs = [];
+      const roadIndices = [];
+
+      const linePositions = [];
+      const lineIndices = [];
+
+      const basePositions = [];
+      const baseIndices = [];
+
+      for (let i = 0; i <= NUM_SAMPLES; i++) {
+        const s = roadSamples[i];
+        const leftPt = s.pos.clone().addScaledVector(s.right, -ROAD_HALF_WIDTH);
+        const rightPt = s.pos.clone().addScaledVector(s.right, ROAD_HALF_WIDTH);
+
+        roadPositions.push(leftPt.x, leftPt.y + 0.03, leftPt.z);
+        roadPositions.push(rightPt.x, rightPt.y + 0.03, rightPt.z);
+        roadNormals.push(0, 1, 0, 0, 1, 0);
+        roadUVs.push(0, s.dist * 0.12, 1, s.dist * 0.12);
+
+        // 路基擋土牆向下延伸 16m 穩固嵌入山坡，徹底消除懸空感
+        basePositions.push(leftPt.x, leftPt.y, leftPt.z);
+        basePositions.push(leftPt.x, leftPt.y - 16.0, leftPt.z);
+        basePositions.push(rightPt.x, rightPt.y, rightPt.z);
+        basePositions.push(rightPt.x, rightPt.y - 16.0, rightPt.z);
+
+        // 中央黃色雙實線/虛線
+        const lineW = 0.16;
+        const cLeft = s.pos.clone().addScaledVector(s.right, -lineW);
+        const cRight = s.pos.clone().addScaledVector(s.right, lineW);
+        linePositions.push(cLeft.x, cLeft.y + 0.055, cLeft.z);
+        linePositions.push(cRight.x, cRight.y + 0.055, cRight.z);
+
+        if (i < NUM_SAMPLES) {
+          const r0 = i * 2;
+          const r1 = i * 2 + 1;
+          const r2 = (i + 1) * 2;
+          const r3 = (i + 1) * 2 + 1;
+          // 修正逆時針繞序讓法線朝正上方 (+Y)
+          roadIndices.push(r0, r1, r2, r1, r3, r2);
+
+          // 虛線間隔
+          if (Math.floor(s.dist / 4.5) % 2 === 0) {
+            lineIndices.push(r0, r1, r2, r1, r3, r2);
+          }
+
+          const bBase = i * 4;
+          const bNext = (i + 1) * 4;
+          // 左側擋土牆（法線朝外側）
+          baseIndices.push(bBase, bNext, bBase + 1, bBase + 1, bNext, bNext + 1);
+          // 右側擋土牆（法線朝外側）
+          baseIndices.push(bBase + 2, bBase + 3, bNext + 2, bBase + 3, bNext + 3, bNext + 2);
+        }
+      }
+
+      const roadGeo = new THREE.BufferGeometry();
+      roadGeo.setAttribute('position', new THREE.Float32BufferAttribute(roadPositions, 3));
+      roadGeo.setAttribute('normal', new THREE.Float32BufferAttribute(roadNormals, 3));
+      roadGeo.setAttribute('uv', new THREE.Float32BufferAttribute(roadUVs, 2));
+      roadGeo.setIndex(roadIndices);
+
+      const roadMat = new THREE.MeshStandardMaterial({
+        map: createAsphaltTexture(),
+        roughness: 0.85,
+        metalness: 0.05,
+        side: THREE.DoubleSide
+      });
+      const roadMesh = new THREE.Mesh(roadGeo, roadMat);
+      roadMesh.receiveShadow = true;
+      scene.add(roadMesh);
+
+      const lineGeo = new THREE.BufferGeometry();
+      lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+      lineGeo.setIndex(lineIndices);
+      const lineMat = new THREE.MeshBasicMaterial({
+        color: 0xfacc15,
+        side: THREE.DoubleSide
+      });
+      scene.add(new THREE.Mesh(lineGeo, lineMat));
+
+      const baseGeo = new THREE.BufferGeometry();
+      baseGeo.setAttribute('position', new THREE.Float32BufferAttribute(basePositions, 3));
+      baseGeo.setIndex(baseIndices);
+      baseGeo.computeVertexNormals();
+      const baseMat = new THREE.MeshStandardMaterial({
+        color: 0x4b5563,
+        roughness: 0.95,
+        side: THREE.DoubleSide
+      });
+      scene.add(new THREE.Mesh(baseGeo, baseMat));
+
+      // 智能護欄生成：髮夾彎處僅移除「內側」護欄（保留外側懸崖護欄），並過濾跨路段入侵護欄
+      const railPositions = [];
+      const railIndices = [];
+      let railVertCount = 0;
+
+      function isPointTooCloseToOtherRoad(pt, selfIdx) {
+        for (let k = 0; k <= NUM_SAMPLES; k += 3) {
+          if (Math.abs(k - selfIdx) < 46) continue;
+          const other = roadSamples[k].pos;
+          const dx = pt.x - other.x;
+          const dz = pt.z - other.z;
+          const dy = Math.abs(pt.y - other.y);
+          if (dx * dx + dz * dz < (ROAD_HALF_WIDTH + 1.4) * (ROAD_HALF_WIDTH + 1.4) && dy < 7.0) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      [-1, 1].forEach(side => {
+        for (let i = 0; i < NUM_SAMPLES; i++) {
+          const s0 = roadSamples[i];
+          const s1 = roadSamples[i + 1];
+
+          // 計算局部最大水平曲率與轉向內側（innerSide: +1 為右彎內側、-1 為左彎內側）
+          let localMaxCurv = 0;
+          const cStart = Math.max(0, i - 3);
+          const cEnd = Math.min(NUM_SAMPLES, i + 4);
+          for (let c = cStart; c <= cEnd; c++) {
+            if (roadSamples[c].curvature > localMaxCurv) {
+              localMaxCurv = roadSamples[c].curvature;
+            }
+          }
+
+          const prevT = roadSamples[Math.max(0, i - 5)].flatTangent;
+          const nextT = roadSamples[Math.min(NUM_SAMPLES, i + 5)].flatTangent;
+          const crossY = prevT.x * nextT.z - prevT.z * nextT.x;
+          const innerSide = crossY >= 0 ? 1 : -1;
+
+          // 髮夾彎處只移除內側護欄，外側護欄完整保留
+          if (localMaxCurv > 0.044 && side === innerSide) continue;
+
+          const offset = side * (ROAD_HALF_WIDTH + 0.18);
+          const p0 = s0.pos.clone().addScaledVector(s0.right, offset);
+          const p1 = s1.pos.clone().addScaledVector(s1.right, offset);
+
+          if (isPointTooCloseToOtherRoad(p0, i) || isPointTooCloseToOtherRoad(p1, i + 1)) continue;
+
+          const hBot = 0.25;
+          const hTop = 0.78;
+          railPositions.push(p0.x, p0.y + hBot, p0.z);
+          railPositions.push(p0.x, p0.y + hTop, p0.z);
+          railPositions.push(p1.x, p1.y + hBot, p1.z);
+          railPositions.push(p1.x, p1.y + hTop, p1.z);
+
+          const v = railVertCount;
+          railIndices.push(v, v + 2, v + 1, v + 1, v + 2, v + 3);
+          railIndices.push(v, v + 1, v + 2, v + 1, v + 3, v + 2);
+          railVertCount += 4;
+        }
+      });
+
+      const railGeo = new THREE.BufferGeometry();
+      railGeo.setAttribute('position', new THREE.Float32BufferAttribute(railPositions, 3));
+      railGeo.setIndex(railIndices);
+      railGeo.computeVertexNormals();
+      const railMat = new THREE.MeshStandardMaterial({
+        color: 0xe2e8f0,
+        metalness: 0.45,
+        roughness: 0.4
+      });
+      const railMesh = new THREE.Mesh(railGeo, railMat);
+      railMesh.castShadow = true;
+      scene.add(railMesh);
+    }
+
+    buildRoadAndGuardrails();
+
+    // =========================================================================
+    // 5. 全區 3D 等高線地形（10m 等高線間隔 + 九芎坑溪／南靖溪水系 + 防穿模路基包絡）
+    // =========================================================================
+    const terrainContourUniforms = {
+      uShowContours: { value: 1.0 },
+      uBaseElev: { value: BASE_ELEV }
+    };
+
+    // 北側主水系：九芎坑溪（自東向西流經半天寮橋下方）
+    const creekCtrl = [
+      gpsToWorld(23.5670, 120.5898, 520),
+      gpsToWorld(23.5656, 120.5858, 455),
+      gpsToWorld(23.5644, 120.5818, 398),
+      gpsToWorld(23.56409, 120.57571, 336), // 直接從半天寮橋正下方穿過
+      gpsToWorld(23.5652, 120.5724, 312),
+      gpsToWorld(23.5676, 120.5692, 282)
+    ];
+    const creekCurve = new THREE.CatmullRomCurve3(creekCtrl);
+    const creekSamples = creekCurve.getSpacedPoints(200);
+
+    // 南側水系：南靖溪與太平雲梯南側深切支流（對應等高線圖南側藍色水系）
+    const southCreekCtrl = [
+      gpsToWorld(23.5588, 120.5978, 820),
+      gpsToWorld(23.5582, 120.5948, 725),
+      gpsToWorld(23.5570, 120.5915, 625),
+      gpsToWorld(23.5554, 120.5882, 525),
+      gpsToWorld(23.5542, 120.5842, 435),
+      gpsToWorld(23.5545, 120.5795, 360),
+      gpsToWorld(23.5552, 120.5745, 315)
+    ];
+    const southCreekCurve = new THREE.CatmullRomCurve3(southCreekCtrl);
+    const southCreekSamples = southCreekCurve.getSpacedPoints(180);
+
+    // 預計算等高線圖關鍵山嶺與鞍部控制點（1:1 對應 image_bba2e2.jpg 等高線分布）
+    const wpNorthKnoll = gpsToWorld(23.5676, 120.5795, 425);    // 九芎坑溪北側 420m 獨立山頭
+    const wpQingliaoPeak = gpsToWorld(23.5686, 120.5945, 810);  // 東北側青寮頂山脊 (700m-800m)
+    const wpNorthRavine = gpsToWorld(23.5656, 120.5916, 565);   // 群彎與青寮頂之間的深切溪谷
+    const wpShanzizhu = gpsToWorld(23.5546, 120.5975, 935);     // 太平雲梯南側山字柱山脊 (900m+)
+    const wpEastSummit = gpsToWorld(23.5602, 120.6012, 1020);   // 望風亭／望風台東側 1000m 高地
+
+    // 建立 2D 空間雜湊網格以加速查詢附近所有賽道採樣點
+    const CELL_SIZE = 32;
+    const roadSpatialGrid = new Map();
+    for (let i = 0; i <= NUM_SAMPLES; i++) {
+      const p = roadSamples[i].pos;
+      const cx = Math.floor(p.x / CELL_SIZE);
+      const cz = Math.floor(p.z / CELL_SIZE);
+      const key = `${cx},${cz}`;
+      if (!roadSpatialGrid.has(key)) roadSpatialGrid.set(key, []);
+      roadSpatialGrid.get(key).push(p);
+    }
+
+    function getNearbyRoadPoints(x, z, radius) {
+      const rCells = Math.ceil(radius / CELL_SIZE);
+      const cx0 = Math.floor(x / CELL_SIZE);
+      const cz0 = Math.floor(z / CELL_SIZE);
+      const list = [];
+      for (let dx = -rCells; dx <= rCells; dx++) {
+        for (let dz = -rCells; dz <= rCells; dz++) {
+          const bucket = roadSpatialGrid.get(`${cx0 + dx},${cz0 + dz}`);
+          if (bucket) {
+            for (let k = 0; k < bucket.length; k++) list.push(bucket[k]);
+          }
+        }
+      }
+      return list;
+    }
+
+    function isSafeOffRoad(x, z, clearance) {
+      const nearby = getNearbyRoadPoints(x, z, ROAD_HALF_WIDTH + clearance + 4);
+      const limitSq = (ROAD_HALF_WIDTH + clearance) * (ROAD_HALF_WIDTH + clearance);
+      for (let k = 0; k < nearby.length; k++) {
+        const dx = x - nearby[k].x;
+        const dz = z - nearby[k].z;
+        if (dx * dx + dz * dz < limitSq) return false;
+      }
+      return true;
+    }
+
+    function getTerrainHeightAt(x, z) {
+      const nearby = getNearbyRoadPoints(x, z, 360);
+      let weightedY = 0;
+      let totalW = 0;
+      let minRoadClearanceY = Infinity;
+      let minDistToRoad = Infinity;
+
+      for (let i = 0; i < nearby.length; i++) {
+        const rp = nearby[i];
+        const dx = x - rp.x;
+        const dz = z - rp.z;
+        const d2 = dx * dx + dz * dz;
+        const dist = Math.sqrt(d2);
+        if (dist < minDistToRoad) minDistToRoad = dist;
+
+        const w = 1.0 / (d2 + 180.0);
+        weightedY += rp.y * w;
+        totalW += w;
+
+        // 路肩安全淨空包絡，徹底避免山壁凸進柏油路面
+        if (dist < ROAD_HALF_WIDTH + 9.5) {
+          const blend = Math.max(0, (dist - (ROAD_HALF_WIDTH + 1.2)) / 8.3);
+          const safeY = (rp.y - 1.55) + blend * 1.1;
+          if (safeY < minRoadClearanceY) {
+            minRoadClearanceY = safeY;
+          }
+        }
+      }
+
+      // 區域宏觀坡面基準（自西向東整體爬升，符合 300m -> 1000m 等高線走勢）
+      const gps = worldToGps(x, z);
+      const macroSlopeElev =
+        335 +
+        THREE.MathUtils.clamp((gps.lon - 120.572) / 0.028, -0.2, 1.25) * 635 -
+        Math.abs(gps.lat - 23.5612) * 16500;
+      const macroY = (macroSlopeElev - BASE_ELEV) * ELEV_SCALE;
+
+      let baseH = totalW > 0 ? weightedY / totalW : macroY;
+      const effectiveRoadDist = minDistToRoad === Infinity ? 360 : minDistToRoad;
+      const roadBlend = THREE.MathUtils.clamp((effectiveRoadDist - 24) / 260, 0, 1);
+      baseH = THREE.MathUtils.lerp(baseH, macroY, roadBlend * 0.72);
+
+      // 疊加等高線圖實景山頭與溪谷特徵
+      const dNorthKnoll = Math.hypot(x - wpNorthKnoll.x, z - wpNorthKnoll.z);
+      const knollBoost = Math.max(0, 1 - dNorthKnoll / 360) ** 1.6 * 92.0;
+
+      const dQingliao = Math.hypot(x - wpQingliaoPeak.x, z - wpQingliaoPeak.z);
+      const qingliaoBoost = Math.max(0, 1 - dQingliao / 520) ** 1.5 * 195.0;
+
+      const dNorthRavine = Math.hypot(x - wpNorthRavine.x, z - wpNorthRavine.z);
+      const ravineCut = Math.max(0, 1 - dNorthRavine / 280) ** 1.6 * 105.0;
+
+      const dShanzizhu = Math.hypot(x - wpShanzizhu.x, z - wpShanzizhu.z);
+      const shanzizhuBoost = Math.max(0, 1 - dShanzizhu / 440) ** 1.5 * 175.0;
+
+      const dEastSummit = Math.hypot(x - wpEastSummit.x, z - wpEastSummit.z);
+      const eastSummitBoost = Math.max(0, 1 - dEastSummit / 480) ** 1.4 * 125.0;
+
+      // 多頻率山稜與山溝皺褶（讓 10m 等高線呈現自然的山脊凸出與山溝凹入）
+      const ridgeNoise =
+        Math.sin(x * 0.0075 + z * 0.004) * Math.cos(z * 0.0085 - x * 0.003) * 16.5 +
+        Math.sin(x * 0.019 + z * 0.016) * 6.8 +
+        Math.cos(x * 0.042 - z * 0.036) * 2.5;
+
+      let finalH =
+        baseH +
+        knollBoost +
+        qingliaoBoost -
+        ravineCut +
+        shanzizhuBoost +
+        eastSummitBoost +
+        ridgeNoise -
+        1.8;
+
+      // 北側九芎坑溪谷下切
+      let minCreekDist = Infinity;
+      let creekY = -8;
+      for (let c = 0; c < creekSamples.length; c += 2) {
+        const cp = creekSamples[c];
+        const d = Math.hypot(x - cp.x, z - cp.z);
+        if (d < minCreekDist) {
+          minCreekDist = d;
+          creekY = cp.y;
+        }
+      }
+      if (minCreekDist < 78) {
+        const t = minCreekDist / 78;
+        finalH = THREE.MathUtils.lerp(creekY - 3.2, finalH, t * t);
+      }
+
+      // 南側南靖溪與太平雲梯南側深切支流下切
+      let minSouthDist = Infinity;
+      let southY = 120;
+      for (let c = 0; c < southCreekSamples.length; c += 2) {
+        const sp = southCreekSamples[c];
+        const d = Math.hypot(x - sp.x, z - sp.z);
+        if (d < minSouthDist) {
+          minSouthDist = d;
+          southY = sp.y;
+        }
+      }
+      if (minSouthDist < 115) {
+        const t = minSouthDist / 115;
+        finalH = THREE.MathUtils.lerp(southY - 12.0, finalH, t * t);
+      }
+
+      if (minRoadClearanceY < Infinity) {
+        finalH = Math.min(finalH, minRoadClearanceY);
+      }
+
+      return finalH;
+    }
+
+    // 判斷是否位於中段緩坡茶園梯田區（對應衛星圖梅山觀景臺、平路、阿嬤咖啡周邊，海拔 720m~900m）
+    function getTeaTerraceFactor(x, z, y) {
+      const realE = BASE_ELEV + y / ELEV_SCALE;
+      if (realE < 715 || realE > 905) return 0;
+      const z1Center = gpsToWorld(23.5624, 120.5916, 760);
+      const z2Center = gpsToWorld(23.5622, 120.5946, 835);
+      const zone1 = Math.max(0, 1 - Math.hypot(x - z1Center.x, z - z1Center.z) / 260);
+      const zone2 = Math.max(0, 1 - Math.hypot(x - z2Center.x, z - z2Center.z) / 240);
+      return Math.min(1, Math.max(zone1, zone2) * 1.35);
+    }
+
+    function buildTerrainAndCreek() {
+      const segX = 360;
+      const segZ = 220;
+      const width = 3600;
+      const depth = 2200;
+
+      const terrainGeo = new THREE.PlaneGeometry(width, depth, segX, segZ);
+      terrainGeo.rotateX(-Math.PI / 2);
+
+      const posAttr = terrainGeo.attributes.position;
+      const colors = new Float32Array(posAttr.count * 3);
+
+      // 山林與茶園色系（略微調亮以便清晰襯托 10m 等高線）
+      const deepCanopy = new THREE.Color(0x1f4724);
+      const midForest = new THREE.Color(0x2d5e2e);
+      const upperForest = new THREE.Color(0x3a7334);
+      const teaLeafBright = new THREE.Color(0x6fb33b);
+      const teaFurrowDark = new THREE.Color(0x396b27);
+      const creekBed = new THREE.Color(0x57534e);
+
+      for (let i = 0; i < posAttr.count; i++) {
+        const vx = posAttr.getX(i);
+        const vz = posAttr.getZ(i);
+        const vy = getTerrainHeightAt(vx, vz);
+        posAttr.setY(i, vy);
+
+        const c = new THREE.Color();
+        const canopyMottle =
+          0.5 +
+          0.3 * Math.sin(vx * 0.048) * Math.cos(vz * 0.048) +
+          0.2 * Math.sin(vx * 0.11 + vz * 0.09);
+
+        if (vy < -14.0) {
+          c.copy(creekBed);
+        } else {
+          const hNorm = THREE.MathUtils.clamp((vy + 20) / 420, 0, 1);
+          c.lerpColors(deepCanopy, midForest, canopyMottle);
+          if (hNorm > 0.42) {
+            c.lerp(upperForest, (hNorm - 0.42) * 0.75);
+          }
+
+          // 疊加茶園梯田紋理
+          const teaFactor = getTeaTerraceFactor(vx, vz, vy);
+          if (teaFactor > 0.08) {
+            const stripeWave =
+              0.5 + 0.5 * Math.sin(vy * 1.15 + Math.sin(vx * 0.014) * 2.8 + Math.cos(vz * 0.016) * 2.2);
+            const teaColor = new THREE.Color().lerpColors(teaFurrowDark, teaLeafBright, stripeWave);
+            c.lerp(teaColor, teaFactor * 0.8);
+          }
+        }
+
+        colors[i * 3] = c.r;
+        colors[i * 3 + 1] = c.g;
+        colors[i * 3 + 2] = c.b;
+      }
+
+      terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      terrainGeo.computeVertexNormals();
+
+      const terrainMat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.94,
+        metalness: 0.01
+      });
+
+      // 透過 GPU Shader 即時繪製抗鋸齒 10m 細等高線、50m 中等高線與 100m 粗主等高線
+      terrainMat.onBeforeCompile = shader => {
+        shader.uniforms.uShowContours = terrainContourUniforms.uShowContours;
+        shader.uniforms.uBaseElev = terrainContourUniforms.uBaseElev;
+
+        shader.vertexShader = shader.vertexShader
+          .replace(
+            '#include <common>',
+            `#include <common>
+             varying vec3 vTopoWorldPos;`
+          )
+          .replace(
+            '#include <begin_vertex>',
+            `#include <begin_vertex>
+             vTopoWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+          );
+
+        shader.fragmentShader = shader.fragmentShader
+          .replace(
+            '#include <common>',
+            `#include <common>
+             varying vec3 vTopoWorldPos;
+             uniform float uShowContours;
+             uniform float uBaseElev;`
+          )
+          .replace(
+            '#include <dithering_fragment>',
+            `if (uShowContours > 0.5) {
+               float elev = uBaseElev + vTopoWorldPos.y;
+               float d10 = fwidth(elev / 10.0);
+               float c10 = abs(fract(elev / 10.0 - 0.5) - 0.5) / max(d10, 0.0001);
+               float line10 = 1.0 - smoothstep(0.0, 1.35, c10);
+
+               float d50 = fwidth(elev / 50.0);
+               float c50 = abs(fract(elev / 50.0 - 0.5) - 0.5) / max(d50, 0.0001);
+               float line50 = 1.0 - smoothstep(0.0, 1.65, c50);
+
+               float d100 = fwidth(elev / 100.0);
+               float c100 = abs(fract(elev / 100.0 - 0.5) - 0.5) / max(d100, 0.0001);
+               float line100 = 1.0 - smoothstep(0.0, 2.15, c100);
+
+               // 遠處自動淡出過密的 10m 細線以避免視覺雜訊
+               float distFade = 1.0 - smoothstep(450.0, 1500.0, length(vTopoWorldPos.xz - cameraPosition.xz));
+               vec3 minorInk = vec3(0.06, 0.11, 0.07);
+               vec3 majorInk = vec3(0.24, 0.15, 0.06);
+
+               gl_FragColor.rgb = mix(gl_FragColor.rgb, minorInk, line10 * 0.36 * distFade);
+               gl_FragColor.rgb = mix(gl_FragColor.rgb, minorInk, line50 * 0.52);
+               gl_FragColor.rgb = mix(gl_FragColor.rgb, majorInk, line100 * 0.72);
+             }
+             #include <dithering_fragment>`
+          );
+      };
+
+      const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
+      terrainMesh.receiveShadow = true;
+      scene.add(terrainMesh);
+
+      // 輔助函式：建立溪水面網格
+      function addStreamRibbon(samples, halfWidth, yOffset) {
+        const sPos = [];
+        const sIdx = [];
+        for (let i = 0; i < samples.length; i++) {
+          const p = samples[i];
+          const prev = samples[Math.max(0, i - 1)];
+          const next = samples[Math.min(samples.length - 1, i + 1)];
+          const dir = new THREE.Vector3().subVectors(next, prev).normalize();
+          const right = new THREE.Vector3(-dir.z, 0, dir.x).multiplyScalar(halfWidth);
+
+          sPos.push(p.x - right.x, p.y + yOffset, p.z - right.z);
+          sPos.push(p.x + right.x, p.y + yOffset, p.z + right.z);
+
+          if (i < samples.length - 1) {
+            const idx = i * 2;
+            sIdx.push(idx, idx + 2, idx + 1, idx + 1, idx + 2, idx + 3);
+          }
+        }
+        const sGeo = new THREE.BufferGeometry();
+        sGeo.setAttribute('position', new THREE.Float32BufferAttribute(sPos, 3));
+        sGeo.setIndex(sIdx);
+        sGeo.computeVertexNormals();
+        const sMat = new THREE.MeshStandardMaterial({
+          color: 0x38bdf8,
+          roughness: 0.2,
+          metalness: 0.15,
+          transparent: true,
+          opacity: 0.85
+        });
+        scene.add(new THREE.Mesh(sGeo, sMat));
+      }
+
+      // 繪製北側九芎坑溪與南側南靖溪水系
+      addStreamRibbon(creekSamples, 7.5, -0.8);
+      addStreamRibbon(southCreekSamples, 6.2, -10.2);
+    }
+
+    buildTerrainAndCreek();
+
+    // 預先計算所有實景 GPS 地標在採樣點上的對應索引（供觀景臺建築與行車提示共用）
+    const landmarkTriggers = [];
+    geoLandmarks.forEach(item => {
+      const wp = gpsToWorld(item.lat, item.lon, BASE_ELEV);
+      let bestIdx = 0;
+      let bestD = Infinity;
+      for (let i = 0; i <= NUM_SAMPLES; i++) {
+        const dx = roadSamples[i].pos.x - wp.x;
+        const dz = roadSamples[i].pos.z - wp.z;
+        const d = dx * dx + dz * dz;
+        if (d < bestD) {
+          bestD = d;
+          bestIdx = i;
+        }
+      }
+      landmarkTriggers.push({ index: bestIdx, text: item.text, triggered: false });
+    });
+
+    // =========================================================================
+    // 6. 衛星實景細節：梅山觀景臺、橘紅屋頂山宅、彎道反光鏡、茶樹壟與遠山
+    // =========================================================================
+    function buildSatelliteLandmarks() {
+      const landmarkGroup = new THREE.Group();
+
+      // 6.1 梅山觀景臺懸空木棧平台與涼亭
+      const viewTrigger = landmarkTriggers.find(t => t.text.includes('梅山觀景臺'));
+      if (viewTrigger) {
+        const s = roadSamples[viewTrigger.index];
+        const deckGroup = new THREE.Group();
+        const deckPos = s.pos.clone().addScaledVector(s.right, ROAD_HALF_WIDTH + 5.2);
+        deckGroup.position.copy(deckPos);
+        deckGroup.rotation.y = Math.atan2(s.flatTangent.x, s.flatTangent.z);
+
+        const woodMat = new THREE.MeshStandardMaterial({ color: 0x92400e, roughness: 0.78 });
+        const pillarMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.7 });
+
+        const platform = new THREE.Mesh(new THREE.BoxGeometry(8.5, 0.45, 14), woodMat);
+        platform.position.y = -0.1;
+        platform.castShadow = true;
+        platform.receiveShadow = true;
+        deckGroup.add(platform);
+
+        // 支撐立柱深入山壁
+        [[-3.6, -6], [3.6, -6], [-3.6, 6], [3.6, 6]].forEach(([px, pz]) => {
+          const post = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.25, 14, 8), pillarMat);
+          post.position.set(px, -7.2, pz);
+          deckGroup.add(post);
+        });
+
+        // 觀景涼亭屋頂
+        const roof = new THREE.Mesh(
+          new THREE.ConeGeometry(3.4, 1.8, 4),
+          new THREE.MeshStandardMaterial({ color: 0xb91c1c, roughness: 0.6 })
+        );
+        roof.position.set(0.5, 4.1, 0);
+        roof.rotation.y = Math.PI / 4;
+        deckGroup.add(roof);
+
+        [[-1.8, -1.8], [2.8, -1.8], [-1.8, 1.8], [2.8, 1.8]].forEach(([px, pz]) => {
+          const col = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 3.4, 8), woodMat);
+          col.position.set(px, 1.7, pz);
+          deckGroup.add(col);
+        });
+
+        landmarkGroup.add(deckGroup);
+      }
+
+      // 6.2 中段茶園聚落（橘紅屋頂山宅）與山頂藍白建築群（以真實 GPS 座標定位）
+      const wallMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.8 });
+      const orangeRoofMat = new THREE.MeshStandardMaterial({ color: 0xc2410c, roughness: 0.65 });
+      const blueRoofMat = new THREE.MeshStandardMaterial({ color: 0x0284c7, roughness: 0.55 });
+
+      const c1 = gpsToWorld(23.5624, 120.5915, 760);
+      const c2 = gpsToWorld(23.5622, 120.5944, 835);
+      const c3 = gpsToWorld(23.5632, 120.5964, 900);
+      const houseSeeds = [
+        { x: c1.x, z: c1.z, count: 6, radius: 85, blue: false },
+        { x: c2.x, z: c2.z, count: 5, radius: 75, blue: false },
+        { x: c3.x, z: c3.z, count: 4, radius: 70, blue: true }
+      ];
+
+      houseSeeds.forEach(cluster => {
+        for (let k = 0; k < cluster.count; k++) {
+          const ang = (k / cluster.count) * Math.PI * 2 + 0.4;
+          const dist = 24 + ((k * 37) % cluster.radius);
+          const hx = cluster.x + Math.cos(ang) * dist;
+          const hz = cluster.z + Math.sin(ang) * dist;
+          if (!isSafeOffRoad(hx, hz, 8.5)) continue;
+
+          const hy = getTerrainHeightAt(hx, hz);
+          const hGroup = new THREE.Group();
+          hGroup.position.set(hx, hy + 1.4, hz);
+          hGroup.rotation.y = ang * 1.7;
+
+          const w = 5.5 + (k % 3) * 1.6;
+          const d = 4.5 + ((k + 1) % 2) * 1.5;
+          const body = new THREE.Mesh(new THREE.BoxGeometry(w, 3.2, d), wallMat);
+          body.castShadow = true;
+          body.receiveShadow = true;
+          hGroup.add(body);
+
+          const roof = new THREE.Mesh(
+            new THREE.BoxGeometry(w + 0.7, 0.7, d + 0.7),
+            cluster.blue ? blueRoofMat : orangeRoofMat
+          );
+          roof.position.y = 1.9;
+          hGroup.add(roof);
+
+          landmarkGroup.add(hGroup);
+        }
+      });
+
+      // 6.3 立體茶園茶樹壟（沿中段茶園緩坡排列）
+      const teaBushMat = new THREE.MeshStandardMaterial({ color: 0x4d7c0f, roughness: 0.9 });
+      const teaGeo = new THREE.BoxGeometry(5.5, 0.95, 1.35);
+      const teaMatrices = [];
+      const dummy = new THREE.Object3D();
+
+      const teaMin = gpsToWorld(23.5638, 120.5898, 720);
+      const teaMax = gpsToWorld(23.5608, 120.5962, 900);
+      for (let gx = Math.min(teaMin.x, teaMax.x); gx <= Math.max(teaMin.x, teaMax.x); gx += 10) {
+        for (let gz = Math.min(teaMin.z, teaMax.z); gz <= Math.max(teaMin.z, teaMax.z); gz += 9) {
+          if (!isSafeOffRoad(gx, gz, 5.2)) continue;
+          const gy = getTerrainHeightAt(gx, gz);
+          if (getTeaTerraceFactor(gx, gz, gy) < 0.42) continue;
+
+          dummy.position.set(gx, gy + 0.35, gz);
+          dummy.rotation.set(0, Math.sin(gx * 0.015) * 0.55, 0);
+          dummy.scale.set(0.85 + (Math.abs(Math.round(gx + gz)) % 3) * 0.15, 1, 1);
+          dummy.updateMatrix();
+          teaMatrices.push(dummy.matrix.clone());
+        }
+      }
+
+      if (teaMatrices.length > 0) {
+        const teaInstanced = new THREE.InstancedMesh(teaGeo, teaBushMat, teaMatrices.length);
+        teaMatrices.forEach((m, idx) => teaInstanced.setMatrixAt(idx, m));
+        teaInstanced.receiveShadow = true;
+        landmarkGroup.add(teaInstanced);
+      }
+
+      // 6.4 台灣山道標配：高曲率髮夾彎外側橘框凸面反光鏡
+      const poleMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.6, roughness: 0.35 });
+      const rimMat = new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.4 });
+      const glassMat = new THREE.MeshStandardMaterial({ color: 0xe0f2fe, metalness: 0.85, roughness: 0.1 });
+
+      for (let i = 15; i < NUM_SAMPLES - 15; i += 14) {
+        const s = roadSamples[i];
+        if (s.curvature < 0.048) continue;
+
+        const prevT = roadSamples[i - 4].flatTangent;
+        const nextT = roadSamples[i + 4].flatTangent;
+        const crossY = prevT.x * nextT.z - prevT.z * nextT.x;
+        const outerSide = crossY >= 0 ? -1 : 1;
+        const mirrorPos = s.pos.clone().addScaledVector(s.right, outerSide * (ROAD_HALF_WIDTH + 0.85));
+
+        const mGroup = new THREE.Group();
+        mGroup.position.copy(mirrorPos);
+        mGroup.lookAt(s.pos.clone().addScaledVector(s.flatTangent, -10));
+
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.09, 2.7, 8), poleMat);
+        pole.position.y = 1.35;
+        mGroup.add(pole);
+
+        const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.48, 0.12, 16), rimMat);
+        rim.rotation.x = Math.PI / 2;
+        rim.position.y = 2.55;
+        mGroup.add(rim);
+
+        const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.14, 16), glassMat);
+        lens.rotation.x = Math.PI / 2;
+        lens.position.set(0, 2.55, 0.02);
+        mGroup.add(lens);
+
+        landmarkGroup.add(mGroup);
+      }
+
+      // 6.5 四周遠景連綿山脈剪影
+      const bgPeakMat = new THREE.MeshStandardMaterial({ color: 0x1e3a2f, roughness: 0.98 });
+      const peakCount = 24;
+      for (let p = 0; p < peakCount; p++) {
+        const angle = (p / peakCount) * Math.PI * 2;
+        const radius = 1950 + (p % 4) * 140;
+        const height = 420 + (p % 5) * 85;
+        const cone = new THREE.Mesh(new THREE.ConeGeometry(460 + (p % 3) * 90, height, 7), bgPeakMat);
+        cone.position.set(Math.cos(angle) * radius, height * 0.35 - 60, Math.sin(angle) * radius);
+        cone.rotation.y = p * 0.7;
+        landmarkGroup.add(cone);
+      }
+
+      scene.add(landmarkGroup);
+    }
+
+    buildSatelliteLandmarks();
+
+    // 6.6 全山區原始林樹木散布（InstancedMesh 高效能渲染）
+    function scatterMountainTrees() {
+      const treePositions = [];
+      let seed = 162162;
+      function rand() {
+        seed = (seed * 1664525 + 1013904223) % 4294967296;
+        return seed / 4294967296;
+      }
+
+      for (let i = 0; i < 2400 && treePositions.length < 1350; i++) {
+        const tx = (rand() - 0.5) * 3400;
+        const tz = (rand() - 0.5) * 1850;
+        if (!isSafeOffRoad(tx, tz, 4.2)) continue;
+
+        const ty = getTerrainHeightAt(tx, tz);
+        if (ty < -4.5) continue;
+        // 茶園中心保留給茶樹壟
+        if (getTeaTerraceFactor(tx, tz, ty) > 0.55 && rand() > 0.22) continue;
+
+        const treeScale = 0.75 + rand() * 0.85;
+        treePositions.push({ x: tx, y: ty, z: tz, scale: treeScale, rot: rand() * Math.PI * 2 });
+      }
+
+      const trunkGeo = new THREE.CylinderGeometry(0.22, 0.36, 3.2, 6);
+      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a3525, roughness: 0.95 });
+      const crownGeo = new THREE.ConeGeometry(2.3, 6.2, 7);
+      const crownMat = new THREE.MeshStandardMaterial({ color: 0x1b4322, roughness: 0.88 });
+
+      const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, treePositions.length);
+      const crownMesh = new THREE.InstancedMesh(crownGeo, crownMat, treePositions.length);
+      const dummy = new THREE.Object3D();
+
+      treePositions.forEach((t, idx) => {
+        dummy.position.set(t.x, t.y + 1.5 * t.scale, t.z);
+        dummy.rotation.set(0, t.rot, 0);
+        dummy.scale.setScalar(t.scale);
+        dummy.updateMatrix();
+        trunkMesh.setMatrixAt(idx, dummy.matrix);
+
+        dummy.position.set(t.x, t.y + 5.2 * t.scale, t.z);
+        dummy.updateMatrix();
+        crownMesh.setMatrixAt(idx, dummy.matrix);
+      });
+
+      crownMesh.castShadow = true;
+      scene.add(trunkMesh);
+      scene.add(crownMesh);
+    }
+
+    scatterMountainTrees();
+
+    // 6.7 建立第 1 彎 ～ 第 36 彎實景編號路牌
+    const bendMarkers = [];
+    function build36BendSigns() {
+      const postMat = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, metalness: 0.5, roughness: 0.4 });
+      const startSample = Math.floor(NUM_SAMPLES * 0.07);
+      const endSample = Math.floor(NUM_SAMPLES * 0.94);
+      const span = endSample - startSample;
+
+      for (let b = 1; b <= 36; b++) {
+        const segStart = startSample + Math.floor(((b - 1) / 36) * span);
+        const segEnd = startSample + Math.floor((b / 36) * span);
+
+        // 在該區段內尋找曲率最大的彎心位置
+        let bestIdx = Math.floor((segStart + segEnd) * 0.5);
+        let maxCurv = -1;
+        for (let k = segStart; k <= segEnd; k++) {
+          if (roadSamples[k].curvature > maxCurv) {
+            maxCurv = roadSamples[k].curvature;
+            bestIdx = k;
+          }
+        }
+
+        const s = roadSamples[bestIdx];
+        const prevT = roadSamples[Math.max(0, bestIdx - 3)].flatTangent;
+        const nextT = roadSamples[Math.min(NUM_SAMPLES, bestIdx + 3)].flatTangent;
+        const crossY = prevT.x * nextT.z - prevT.z * nextT.x;
+        const outerSide = crossY >= 0 ? -1 : 1;
+
+        const signCanvas = document.createElement('canvas');
+        signCanvas.width = 256;
+        signCanvas.height = 128;
+        const ctx = signCanvas.getContext('2d');
+        ctx.fillStyle = '#1e3a8a';
+        ctx.fillRect(0, 0, 256, 128);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 8;
+        ctx.strokeRect(8, 8, 240, 112);
+        ctx.fillStyle = '#facc15';
+        ctx.font = 'bold 26px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('縣道 162 甲線', 128, 44);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '900 44px sans-serif';
+        ctx.fillText(`第 ${b} 彎`, 128, 98);
+
+        const signTex = new THREE.CanvasTexture(signCanvas);
+        const signGroup = new THREE.Group();
+        const signPos = s.pos.clone().addScaledVector(s.right, outerSide * (ROAD_HALF_WIDTH + 1.05));
+        signGroup.position.copy(signPos);
+        signGroup.lookAt(s.pos.clone().addScaledVector(s.flatTangent, -14));
+
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 2.9, 8), postMat);
+        post.position.y = 1.45;
+        signGroup.add(post);
+
+        const board = new THREE.Mesh(
+          new THREE.BoxGeometry(1.75, 0.88, 0.08),
+          new THREE.MeshBasicMaterial({ map: signTex })
+        );
+        board.position.y = 2.65;
+        signGroup.add(board);
+
+        scene.add(signGroup);
+        bendMarkers.push({ bendNum: b, sampleIndex: bestIdx });
+      }
+    }
+
+    build36BendSigns();
+
+    // =========================================================================
+    // 6.8 第 36 彎實景街景還原（彎心草丘松樹路燈、黃黑紐澤西護欄、紅色 36 意象牌）
+    // =========================================================================
+    function buildBend36StreetDetails() {
+      const bend36Trigger = landmarkTriggers.find(t => t.text.includes('太平三十六彎'));
+      if (!bend36Trigger) return;
+
+      const idx36 = bend36Trigger.index;
+      const s36 = roadSamples[idx36];
+      const prevT = roadSamples[Math.max(0, idx36 - 6)].flatTangent;
+      const nextT = roadSamples[Math.min(NUM_SAMPLES, idx36 + 6)].flatTangent;
+      const crossY = prevT.x * nextT.z - prevT.z * nextT.x;
+      const outerSide = crossY >= 0 ? -1 : 1;
+      const innerSide = -outerSide;
+
+      const streetGroup = new THREE.Group();
+
+      // 1. 彎心草坡槽化島、排水矮牆、古松與彎臂銀色路燈（對應 36灣轉彎處.jpg）
+      const islandCenter = s36.pos.clone().addScaledVector(s36.right, innerSide * (ROAD_HALF_WIDTH + 4.8));
+      const islandCheck = s36.pos.clone().addScaledVector(s36.right, innerSide * (ROAD_HALF_WIDTH + 3.6));
+      if (isSafeOffRoad(islandCheck.x, islandCheck.z, 0.8)) {
+        const islandGroup = new THREE.Group();
+        islandGroup.position.copy(islandCheck);
+        islandGroup.rotation.y = Math.atan2(s36.flatTangent.x, s36.flatTangent.z);
+
+        // 草皮小土丘
+        const moundGeo = new THREE.SphereGeometry(2.8, 16, 12);
+        moundGeo.scale(1.15, 0.36, 1.75);
+        const moundMat = new THREE.MeshStandardMaterial({ color: 0x4d7c0f, roughness: 0.92 });
+        const mound = new THREE.Mesh(moundGeo, moundMat);
+        mound.position.y = 0.25;
+        mound.receiveShadow = true;
+        islandGroup.add(mound);
+
+        // 彎心端頭水泥排水擋牆與石塊
+        const concreteMat = new THREE.MeshStandardMaterial({ color: 0x78716c, roughness: 0.9 });
+        const curbWall = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.68, 0.55), concreteMat);
+        curbWall.position.set(0, 0.34, 2.3);
+        curbWall.castShadow = true;
+        islandGroup.add(curbWall);
+
+        // 彎心古松樹幹與多層樹冠
+        const pineTrunk = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.16, 0.26, 2.6, 8),
+          new THREE.MeshStandardMaterial({ color: 0x4a3525, roughness: 0.95 })
+        );
+        pineTrunk.position.set(-0.2, 1.4, -0.3);
+        pineTrunk.rotation.z = 0.14;
+        islandGroup.add(pineTrunk);
+
+        const pineFoliageMat = new THREE.MeshStandardMaterial({ color: 0x2d5a27, roughness: 0.85 });
+        [
+          { x: -0.35, y: 2.7, z: -0.2, r: 1.45 },
+          { x: 0.35, y: 3.1, z: -0.5, r: 1.25 },
+          { x: -0.1, y: 3.6, z: -0.1, r: 1.15 }
+        ].forEach(c => {
+          const foliage = new THREE.Mesh(new THREE.DodecahedronGeometry(c.r, 1), pineFoliageMat);
+          foliage.scale.set(1.2, 0.65, 1.2);
+          foliage.position.set(c.x, c.y, c.z);
+          foliage.castShadow = true;
+          islandGroup.add(foliage);
+        });
+
+        // 彎心銀色高桿路燈
+        const lampMat = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, metalness: 0.65, roughness: 0.3 });
+        const lampPole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.1, 6.2, 10), lampMat);
+        lampPole.position.set(-0.85, 3.1, 1.45);
+        islandGroup.add(lampPole);
+
+        const lampArm = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 1.85), lampMat);
+        lampArm.position.set(-0.85, 6.25, 2.25);
+        lampArm.rotation.x = -0.22;
+        islandGroup.add(lampArm);
+
+        const lampHead = new THREE.Mesh(
+          new THREE.BoxGeometry(0.24, 0.1, 0.45),
+          new THREE.MeshBasicMaterial({ color: 0xfef9c3 })
+        );
+        lampHead.position.set(-0.85, 6.45, 3.05);
+        islandGroup.add(lampHead);
+
+        streetGroup.add(islandGroup);
+      }
+
+      // 2. 外側黑黃斜紋水泥紐澤西護欄（對應 36灣轉彎處1.jpg）
+      const jerseyPositions = [];
+      const jerseyIndices = [];
+      let jVert = 0;
+
+      // 繪製紐澤西護欄頂部黑黃斜紋貼圖
+      const stripeCanvas = document.createElement('canvas');
+      stripeCanvas.width = 256;
+      stripeCanvas.height = 64;
+      const sCtx = stripeCanvas.getContext('2d');
+      sCtx.fillStyle = '#64748b';
+      sCtx.fillRect(0, 0, 256, 64);
+      for (let sx = -32; sx < 288; sx += 32) {
+        sCtx.fillStyle = '#facc15';
+        sCtx.fillRect(sx, 0, 16, 18);
+        sCtx.fillStyle = '#18181b';
+        sCtx.fillRect(sx + 16, 0, 16, 18);
+      }
+      const jerseyTex = new THREE.CanvasTexture(stripeCanvas);
+      jerseyTex.wrapS = THREE.RepeatWrapping;
+      jerseyTex.wrapT = THREE.ClampToEdgeWrapping;
+      const jerseyUVs = [];
+
+      const jStart = Math.max(0, idx36 - 16);
+      const jEnd = Math.min(NUM_SAMPLES - 1, idx36 + 15);
+      for (let i = jStart; i < jEnd; i++) {
+        const s0 = roadSamples[i];
+        const s1 = roadSamples[i + 1];
+        const off = outerSide * (ROAD_HALF_WIDTH + 0.22);
+        const p0 = s0.pos.clone().addScaledVector(s0.right, off);
+        const p1 = s1.pos.clone().addScaledVector(s1.right, off);
+
+        jerseyPositions.push(p0.x, p0.y, p0.z);
+        jerseyPositions.push(p0.x, p0.y + 0.88, p0.z);
+        jerseyPositions.push(p1.x, p1.y, p1.z);
+        jerseyPositions.push(p1.x, p1.y + 0.88, p1.z);
+
+        const u0 = (i - jStart) * 0.65;
+        const u1 = (i + 1 - jStart) * 0.65;
+        jerseyUVs.push(u0, 1, u0, 0, u1, 1, u1, 0);
+
+        jerseyIndices.push(jVert, jVert + 2, jVert + 1, jVert + 1, jVert + 2, jVert + 3);
+        jerseyIndices.push(jVert, jVert + 1, jVert + 2, jVert + 1, jVert + 3, jVert + 2);
+        jVert += 4;
+      }
+
+      const jerseyGeo = new THREE.BufferGeometry();
+      jerseyGeo.setAttribute('position', new THREE.Float32BufferAttribute(jerseyPositions, 3));
+      jerseyGeo.setAttribute('uv', new THREE.Float32BufferAttribute(jerseyUVs, 2));
+      jerseyGeo.setIndex(jerseyIndices);
+      jerseyGeo.computeVertexNormals();
+      const jerseyMesh = new THREE.Mesh(
+        jerseyGeo,
+        new THREE.MeshStandardMaterial({ map: jerseyTex, roughness: 0.85 })
+      );
+      jerseyMesh.castShadow = true;
+      streetGroup.add(jerseyMesh);
+
+      // 3. 第 36 彎經典紅色雲朵意象鐵雕牌（立於外側紐澤西護欄上）
+      const artCanvas = document.createElement('canvas');
+      artCanvas.width = 128;
+      artCanvas.height = 256;
+      const aCtx = artCanvas.getContext('2d');
+      aCtx.clearRect(0, 0, 128, 256);
+
+      // 紅色樹幹底座與雲朵輪廓
+      aCtx.fillStyle = '#dc2626';
+      aCtx.fillRect(54, 95, 20, 148);
+      aCtx.fillRect(36, 234, 60, 14);
+      [
+        [64, 52, 34], [38, 86, 26], [90, 86, 26],
+        [44, 124, 24], [84, 124, 24], [64, 152, 22]
+      ].forEach(([cx, cy, cr]) => {
+        aCtx.beginPath();
+        aCtx.arc(cx, cy, cr, 0, Math.PI * 2);
+        aCtx.fill();
+      });
+
+      // 頂部白底紅字「36」圓牌
+      aCtx.fillStyle = '#ffffff';
+      aCtx.beginPath();
+      aCtx.arc(64, 48, 23, 0, Math.PI * 2);
+      aCtx.fill();
+      aCtx.fillStyle = '#b91c1c';
+      aCtx.font = '900 28px sans-serif';
+      aCtx.textAlign = 'center';
+      aCtx.textBaseline = 'middle';
+      aCtx.fillText('36', 64, 50);
+
+      const artTex = new THREE.CanvasTexture(artCanvas);
+      const sArt = roadSamples[Math.max(0, idx36 - 2)];
+      const artPos = sArt.pos.clone().addScaledVector(sArt.right, outerSide * (ROAD_HALF_WIDTH + 0.35));
+      const artMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.35, 2.7),
+        new THREE.MeshBasicMaterial({ map: artTex, transparent: true, alphaTest: 0.4, side: THREE.DoubleSide })
+      );
+      artMesh.position.copy(artPos).add(new THREE.Vector3(0, 2.15, 0));
+      artMesh.lookAt(sArt.pos.clone().addScaledVector(sArt.flatTangent, -10).add(new THREE.Vector3(0, 2.15, 0)));
+      streetGroup.add(artMesh);
+
+      // 4. 黑黃箭頭轉彎方向標誌牌 + 木雕 36 樁 + 紫色旗幟（對應 36灣轉彎處1.jpg / 第36灣.jpg）
+      const chevCanvas = document.createElement('canvas');
+      chevCanvas.width = 128;
+      chevCanvas.height = 128;
+      const cCtx = chevCanvas.getContext('2d');
+      cCtx.fillStyle = '#f59e0b';
+      cCtx.fillRect(0, 0, 128, 128);
+      cCtx.fillStyle = '#18181b';
+      cCtx.beginPath();
+      cCtx.moveTo(42, 18);
+      cCtx.lineTo(88, 64);
+      cCtx.lineTo(42, 110);
+      cCtx.lineTo(22, 110);
+      cCtx.lineTo(68, 64);
+      cCtx.lineTo(22, 18);
+      cCtx.closePath();
+      cCtx.fill();
+      const chevTex = new THREE.CanvasTexture(chevCanvas);
+      const chevMat = new THREE.MeshBasicMaterial({ map: chevTex, side: THREE.DoubleSide });
+      const postMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.5, roughness: 0.4 });
+
+      [-11, -5, 2, 7].forEach(offsetIdx => {
+        const si = roadSamples[THREE.MathUtils.clamp(idx36 + offsetIdx, 0, NUM_SAMPLES)];
+        const cPos = si.pos.clone().addScaledVector(si.right, outerSide * (ROAD_HALF_WIDTH + 0.72));
+        const cGroup = new THREE.Group();
+        cGroup.position.copy(cPos);
+        cGroup.lookAt(si.pos.clone().addScaledVector(si.flatTangent, -12));
+
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 2.2, 6), postMat);
+        pole.position.y = 1.1;
+        cGroup.add(pole);
+
+        const board = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.68, 0.06), chevMat);
+        board.position.y = 1.95;
+        cGroup.add(board);
+
+        streetGroup.add(cGroup);
+      });
+
+      // 紫色三角小旗幟（插在入彎處箭頭牌旁）
+      const flagSample = roadSamples[Math.max(0, idx36 - 10)];
+      const flagPos = flagSample.pos.clone().addScaledVector(flagSample.right, outerSide * (ROAD_HALF_WIDTH + 0.9));
+      const flagPole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 3.1, 6), postMat);
+      flagPole.position.copy(flagPos).add(new THREE.Vector3(0, 1.55, 0));
+      streetGroup.add(flagPole);
+
+      const flagCloth = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.75, 0.48),
+        new THREE.MeshBasicMaterial({ color: 0x8b5cf6, side: THREE.DoubleSide })
+      );
+      flagCloth.position.copy(flagPos).add(new THREE.Vector3(0.36, 2.85, 0));
+      streetGroup.add(flagCloth);
+
+      // 5. 柏油路面白色「162甲縣道」與「X」標線貼花（對應 36灣轉彎處.jpg / 第36灣.jpg）
+      function createRoadDecal(text, w, h, fontSpec) {
+        const dc = document.createElement('canvas');
+        dc.width = 256;
+        dc.height = 512;
+        const dCtx = dc.getContext('2d');
+        dCtx.clearRect(0, 0, 256, 512);
+        dCtx.fillStyle = 'rgba(248, 250, 252, 0.86)';
+        dCtx.font = fontSpec;
+        dCtx.textAlign = 'center';
+        dCtx.textBaseline = 'middle';
+        if (text === 'X') {
+          dCtx.lineWidth = 22;
+          dCtx.strokeStyle = 'rgba(248, 250, 252, 0.82)';
+          dCtx.beginPath();
+          dCtx.moveTo(45, 110);
+          dCtx.lineTo(211, 402);
+          dCtx.moveTo(211, 110);
+          dCtx.lineTo(45, 402);
+          dCtx.stroke();
+        } else {
+          const chars = text.split('');
+          chars.forEach((ch, idx) => {
+            dCtx.fillText(ch, 128, 65 + idx * 76);
+          });
+        }
+        const dTex = new THREE.CanvasTexture(dc);
+        const geo = new THREE.PlaneGeometry(w, h);
+        geo.rotateX(-Math.PI / 2);
+        return new THREE.Mesh(
+          geo,
+          new THREE.MeshBasicMaterial({ map: dTex, transparent: true, depthWrite: false })
+        );
+      }
+
+      // 入彎前「X」字與「162甲縣道」地面標字
+      const sEntryX = roadSamples[Math.max(0, idx36 - 11)];
+      const decalX = createRoadDecal('X', 2.4, 3.6, 'bold 120px sans-serif');
+      decalX.position.copy(sEntryX.pos).addScaledVector(sEntryX.right, outerSide * 2.2).add(new THREE.Vector3(0, 0.048, 0));
+      decalX.rotation.y = Math.atan2(sEntryX.flatTangent.x, sEntryX.flatTangent.z);
+      streetGroup.add(decalX);
+
+      const sEntryText = roadSamples[Math.max(0, idx36 - 7)];
+      const decalEntry = createRoadDecal('162甲縣道', 1.85, 5.2, '900 62px sans-serif');
+      decalEntry.position.copy(sEntryText.pos).addScaledVector(sEntryText.right, outerSide * 2.4).add(new THREE.Vector3(0, 0.048, 0));
+      decalEntry.rotation.y = Math.atan2(sEntryText.flatTangent.x, sEntryText.flatTangent.z);
+      streetGroup.add(decalEntry);
+
+      // 出彎處「162甲縣道」地面標字
+      const sExitText = roadSamples[Math.min(NUM_SAMPLES, idx36 + 6)];
+      const decalExit = createRoadDecal('162甲縣道', 1.85, 5.2, '900 62px sans-serif');
+      decalExit.position.copy(sExitText.pos).addScaledVector(sExitText.right, innerSide * 2.3).add(new THREE.Vector3(0, 0.048, 0));
+      decalExit.rotation.y = Math.atan2(sExitText.flatTangent.x, sExitText.flatTangent.z);
+      streetGroup.add(decalExit);
+
+      // 6. 「雲海大飯店 Welcome」大型藍色路邊廣告看板（對應 第36灣.jpg 右側）
+      const bbCanvas = document.createElement('canvas');
+      bbCanvas.width = 512;
+      bbCanvas.height = 256;
+      const bCtx = bbCanvas.getContext('2d');
+      const grad = bCtx.createLinearGradient(0, 0, 0, 256);
+      grad.addColorStop(0, '#0284c7');
+      grad.addColorStop(1, '#1d4ed8');
+      bCtx.fillStyle = grad;
+      bCtx.fillRect(0, 0, 512, 256);
+      bCtx.strokeStyle = '#ffffff';
+      bCtx.lineWidth = 10;
+      bCtx.strokeRect(8, 8, 496, 240);
+
+      bCtx.fillStyle = '#ffffff';
+      bCtx.font = '900 54px sans-serif';
+      bCtx.textAlign = 'left';
+      bCtx.fillText('雲海大飯店', 34, 82);
+      bCtx.fillStyle = '#fef08a';
+      bCtx.font = 'italic 900 38px sans-serif';
+      bCtx.fillText('Welcome', 42, 134);
+
+      bCtx.fillStyle = '#dc2626';
+      bCtx.fillRect(28, 165, 456, 56);
+      bCtx.fillStyle = '#ffffff';
+      bCtx.font = 'bold 28px sans-serif';
+      bCtx.fillText('渡假 · 會議 · 山產部 · 聚餐', 54, 202);
+
+      const bbTex = new THREE.CanvasTexture(bbCanvas);
+      const sBoard = roadSamples[Math.max(0, idx36 - 14)];
+      const bbGroup = new THREE.Group();
+      const bbPos = sBoard.pos.clone().addScaledVector(sBoard.right, outerSide * (ROAD_HALF_WIDTH + 4.4));
+      bbGroup.position.copy(bbPos);
+      bbGroup.lookAt(sBoard.pos.clone().addScaledVector(sBoard.flatTangent, -16));
+
+      [-1.7, 1.7].forEach(lx => {
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.12, 4.2, 8), postMat);
+        leg.position.set(lx, 1.8, 0);
+        bbGroup.add(leg);
+      });
+      const bbPanel = new THREE.Mesh(
+        new THREE.BoxGeometry(4.4, 2.2, 0.14),
+        new THREE.MeshBasicMaterial({ map: bbTex })
+      );
+      bbPanel.position.y = 3.1;
+      bbGroup.add(bbPanel);
+      streetGroup.add(bbGroup);
+
+      // 7. 遠方山稜高壓電塔剪影（對應 第36灣.jpg 背景左側）
+      const pylonPos = s36.pos.clone()
+        .addScaledVector(s36.flatTangent, 46)
+        .addScaledVector(s36.right, outerSide * 28);
+      pylonPos.y = getTerrainHeightAt(pylonPos.x, pylonPos.z);
+
+      const pylonGroup = new THREE.Group();
+      pylonGroup.position.copy(pylonPos);
+      const steelMat = new THREE.MeshStandardMaterial({
+        color: 0x475569,
+        metalness: 0.7,
+        roughness: 0.4,
+        wireframe: true
+      });
+      const towerBody = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 3.6, 28, 4, 6), steelMat);
+      towerBody.position.y = 14;
+      pylonGroup.add(towerBody);
+
+      [19, 24.5].forEach((armY, idx) => {
+        const arm = new THREE.Mesh(new THREE.BoxGeometry(10 - idx * 2.5, 0.7, 1.2), steelMat);
+        arm.position.y = armY;
+        pylonGroup.add(arm);
+      });
+      streetGroup.add(pylonGroup);
+
+      scene.add(streetGroup);
+    }
+
+    buildBend36StreetDetails();
+
+    // =========================================================================
+    // 7. 賽車 3D 模型與擦撞火花粒子系統
+    // =========================================================================
+    const carGroup = new THREE.Group();
+    const carVisual = new THREE.Group();
+    carGroup.add(carVisual);
+
+    const bodyWhiteMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.25, metalness: 0.2 });
+    const trimBlackMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.6, metalness: 0.2 });
+    const glassCabMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.15, metalness: 0.85 });
+    const brakeLightMat = new THREE.MeshStandardMaterial({
+      color: 0xdc2626,
+      emissive: 0xef4444,
+      emissiveIntensity: 0.4
+    });
+
+    // 車身下盤與引擎蓋
+    const lowerChassis = new THREE.Mesh(new THREE.BoxGeometry(1.88, 0.56, 4.15), bodyWhiteMat);
+    lowerChassis.position.y = 0.52;
+    lowerChassis.castShadow = true;
+    carVisual.add(lowerChassis);
+
+    // 側裙與前後保險桿黑飾條
+    const bumperStrip = new THREE.Mesh(new THREE.BoxGeometry(1.92, 0.2, 4.22), trimBlackMat);
+    bumperStrip.position.y = 0.34;
+    carVisual.add(bumperStrip);
+
+    // 座艙車頂
+    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.56, 0.5, 2.05), glassCabMat);
+    cabin.position.set(0, 1.0, -0.15);
+    cabin.castShadow = true;
+    carVisual.add(cabin);
+
+    const roofTop = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.08, 1.65), bodyWhiteMat);
+    roofTop.position.set(0, 1.26, -0.2);
+    carVisual.add(roofTop);
+
+    // 尾翼
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(1.78, 0.08, 0.28), trimBlackMat);
+    wing.position.set(0, 0.96, -1.92);
+    carVisual.add(wing);
+
+    // 頭燈與煞車尾燈
+    const headLightMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
+    [-0.64, 0.64].forEach(lx => {
+      const hl = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.14, 0.08), headLightMat);
+      hl.position.set(lx, 0.56, 2.08);
+      carVisual.add(hl);
+
+      const tl = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.15, 0.08), brakeLightMat);
+      tl.position.set(lx, 0.62, -2.08);
+      carVisual.add(tl);
+    });
+
+    // 四顆車輪（前輪支援左右轉向樞紐）
+    const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.28, 16);
+    wheelGeo.rotateZ(Math.PI / 2);
+    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.85 });
+
+    const frontWheelPivots = [];
+    const allWheels = [];
+    [
+      { x: -0.92, z: 1.32, front: true },
+      { x: 0.92, z: 1.32, front: true },
+      { x: -0.92, z: -1.32, front: false },
+      { x: 0.92, z: -1.32, front: false }
+    ].forEach(cfg => {
+      const pivot = new THREE.Group();
+      pivot.position.set(cfg.x, 0.36, cfg.z);
+      const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+      wheel.castShadow = true;
+      pivot.add(wheel);
+      carVisual.add(pivot);
+      allWheels.push(wheel);
+      if (cfg.front) frontWheelPivots.push(pivot);
+    });
+
+    scene.add(carGroup);
+
+    // 護欄擦撞火花粒子池
+    const sparkPool = [];
+    const sparkGeo = new THREE.BoxGeometry(0.14, 0.14, 0.35);
+    const sparkMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 });
+    for (let i = 0; i < 65; i++) {
+      const m = new THREE.Mesh(sparkGeo, sparkMat);
+      m.visible = false;
+      scene.add(m);
+      sparkPool.push({ mesh: m, vel: new THREE.Vector3(), life: 0 });
+    }
+
+    function spawnWallSparks(origin, tangentDir, sideSign, intensity) {
+      let spawned = 0;
+      const count = Math.min(12, Math.ceil(intensity * 0.6));
+      for (let i = 0; i < sparkPool.length && spawned < count; i++) {
+        const sp = sparkPool[i];
+        if (sp.life > 0) continue;
+        sp.life = 0.22 + Math.random() * 0.25;
+        sp.mesh.visible = true;
+        sp.mesh.position.copy(origin);
+        sp.vel.set(
+          -tangentDir.x * (6 + Math.random() * 10) + (Math.random() - 0.5) * 6 - sideSign * 2,
+          2.5 + Math.random() * 5.5,
+          -tangentDir.z * (6 + Math.random() * 10) + (Math.random() - 0.5) * 6
+        );
+        spawned++;
+      }
+    }
+
+    function updateSparks(dt) {
+      for (let i = 0; i < sparkPool.length; i++) {
+        const sp = sparkPool[i];
+        if (sp.life <= 0) continue;
+        sp.life -= dt;
+        if (sp.life <= 0) {
+          sp.mesh.visible = false;
+          continue;
+        }
+        sp.vel.y -= 18 * dt;
+        sp.mesh.position.addScaledVector(sp.vel, dt);
+        sp.mesh.lookAt(sp.mesh.position.clone().add(sp.vel));
+      }
+    }
+
+    // =========================================================================
+    // 8. 連續線段投影貼牆滑行物理、操控輸入與小地圖渲染
+    // =========================================================================
+    const keys = {
+      up: false,
+      down: false,
+      left: false,
+      right: false,
+      drift: false
+    };
+
+    const carPos = new THREE.Vector3();
+    let heading = 0;
+    let velAngle = 0;
+    let speed = 0; // m/s
+    let steerAngle = 0;
+    let bodyRoll = 0;
+    let nearestSampleIdx = 4;
+
+    let elapsedTime = 0;
+    let timerStarted = false;
+    let raceFinished = false;
+    let maxSpeedReached = 0;
+    let driftScore = 0;
+    let cameraMode = 0;
+    let cameraShake = 0;
+    const camCurrentPos = new THREE.Vector3();
+    const camLookTarget = new THREE.Vector3();
+
+    const toastEl = document.getElementById('landmark-toast');
+    let toastTimer = null;
+    function showToast(msg) {
+      toastEl.textContent = msg;
+      toastEl.classList.remove('opacity-0', '-translate-y-2');
+      toastEl.classList.add('opacity-100', 'translate-y-0');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toastEl.classList.remove('opacity-100', 'translate-y-0');
+        toastEl.classList.add('opacity-0', '-translate-y-2');
+      }, 3200);
+    }
+
+    function placeCarAtSample(idx, snapCamera) {
+      const safeIdx = THREE.MathUtils.clamp(idx, 2, NUM_SAMPLES - 2);
+      const s = roadSamples[safeIdx];
+      nearestSampleIdx = safeIdx;
+      carPos.copy(s.pos);
+      heading = Math.atan2(s.flatTangent.x, s.flatTangent.z);
+      velAngle = heading;
+      speed = 0;
+      steerAngle = 0;
+      bodyRoll = 0;
+      carGroup.position.copy(carPos);
+      carGroup.rotation.set(0, heading, 0);
+
+      if (snapCamera) {
+        camCurrentPos.copy(carPos).addScaledVector(s.flatTangent, -10.5).add(new THREE.Vector3(0, 4.4, 0));
+        camLookTarget.copy(carPos).addScaledVector(s.flatTangent, 8).add(new THREE.Vector3(0, 1.5, 0));
+        camera.position.copy(camCurrentPos);
+        camera.lookAt(camLookTarget);
+      }
+    }
+
+    function resetCarInPlace() {
+      placeCarAtSample(nearestSampleIdx, true);
+      showToast('🔄 已將車輛回正至目前路段中央');
+    }
+
+    function resetToStart() {
+      elapsedTime = 0;
+      timerStarted = false;
+      raceFinished = false;
+      maxSpeedReached = 0;
+      driftScore = 0;
+      landmarkTriggers.forEach(t => { t.triggered = false; });
+      document.getElementById('finish-modal').classList.add('hidden');
+      document.getElementById('finish-modal').classList.remove('flex');
+      placeCarAtSample(4, true);
+      showToast('📍 西門大將軍（起點 · 海拔 326m）');
+    }
+
+    // 鍵盤與按鈕事件綁定
+    window.addEventListener('keydown', e => {
+      const code = e.code;
+      if (code === 'KeyW' || code === 'ArrowUp') keys.up = true;
+      if (code === 'KeyS' || code === 'ArrowDown') keys.down = true;
+      if (code === 'KeyA' || code === 'ArrowLeft') keys.left = true;
+      if (code === 'KeyD' || code === 'ArrowRight') keys.right = true;
+      if (code === 'Space') {
+        keys.drift = true;
+        e.preventDefault();
+      }
+      if (code === 'KeyC') toggleCameraMode();
+      if (code === 'KeyT') toggleContourLines();
+      if (code === 'KeyF') toggleFogLevel();
+      if (code === 'KeyR') resetCarInPlace();
+      if (code === 'KeyH') resetToStart();
+    });
+
+    window.addEventListener('keyup', e => {
+      const code = e.code;
+      if (code === 'KeyW' || code === 'ArrowUp') keys.up = false;
+      if (code === 'KeyS' || code === 'ArrowDown') keys.down = false;
+      if (code === 'KeyA' || code === 'ArrowLeft') keys.left = false;
+      if (code === 'KeyD' || code === 'ArrowRight') keys.right = false;
+      if (code === 'Space') keys.drift = false;
+    });
+
+    function toggleCameraMode() {
+      cameraMode = (cameraMode + 1) % 3;
+      const labels = ['追尾視角 (C)', '引擎蓋視角 (C)', '高空鳥瞰 (C)'];
+      document.getElementById('cam-label').textContent = labels[cameraMode];
+    }
+
+    function toggleContourLines() {
+      const nextVal = terrainContourUniforms.uShowContours.value > 0.5 ? 0.0 : 1.0;
+      terrainContourUniforms.uShowContours.value = nextVal;
+      document.getElementById('contour-label').textContent =
+        nextVal > 0.5 ? '等高線 10m (T)' : '等高線關閉 (T)';
+      initMinimapBackground();
+    }
+
+    function toggleFogLevel() {
+      currentFogIdx = (currentFogIdx + 1) % fogLevels.length;
+      const f = fogLevels[currentFogIdx];
+      scene.background.setHex(f.color);
+      scene.fog.color.setHex(f.color);
+      scene.fog.density = f.density;
+      document.getElementById('fog-label').textContent = f.name;
+    }
+
+    document.getElementById('btn-cam').addEventListener('click', toggleCameraMode);
+    document.getElementById('btn-contour').addEventListener('click', toggleContourLines);
+    document.getElementById('btn-fog').addEventListener('click', toggleFogLevel);
+    document.getElementById('btn-reset').addEventListener('click', resetCarInPlace);
+    document.getElementById('btn-home').addEventListener('click', resetToStart);
+    document.getElementById('btn-play-again').addEventListener('click', resetToStart);
+
+    // 行動裝置觸控按鈕
+    function bindTouchButton(id, keyName) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const start = e => { e.preventDefault(); keys[keyName] = true; el.classList.add('touch-active'); };
+      const end = e => { e.preventDefault(); keys[keyName] = false; el.classList.remove('touch-active'); };
+      el.addEventListener('touchstart', start, { passive: false });
+      el.addEventListener('touchend', end, { passive: false });
+      el.addEventListener('mousedown', start);
+      el.addEventListener('mouseup', end);
+      el.addEventListener('mouseleave', end);
+    }
+    bindTouchButton('btn-touch-left', 'left');
+    bindTouchButton('btn-touch-right', 'right');
+    bindTouchButton('btn-touch-gas', 'up');
+    bindTouchButton('btn-touch-brake', 'down');
+    bindTouchButton('btn-touch-drift', 'drift');
+
+    // 連續賽道線段投影查詢（消除離散採樣點階梯跳動）
+    function projectOntoRoadContinuous(pos, hintIdx) {
+      const searchRadius = 45;
+      const startIdx = Math.max(0, hintIdx - searchRadius);
+      const endIdx = Math.min(NUM_SAMPLES - 1, hintIdx + searchRadius);
+
+      let bestDistSq = Infinity;
+      let bestSegIdx = hintIdx;
+      let bestAlpha = 0;
+
+      for (let i = startIdx; i <= endIdx; i++) {
+        const a = roadSamples[i].pos;
+        const b = roadSamples[i + 1].pos;
+        const abx = b.x - a.x;
+        const abz = b.z - a.z;
+        const abLenSq = abx * abx + abz * abz;
+        let alpha = 0;
+        if (abLenSq > 0.0001) {
+          alpha = THREE.MathUtils.clamp(((pos.x - a.x) * abx + (pos.z - a.z) * abz) / abLenSq, 0, 1);
+        }
+        const px = a.x + abx * alpha;
+        const pz = a.z + abz * alpha;
+        const dx = pos.x - px;
+        const dz = pos.z - pz;
+        const dSq = dx * dx + dz * dz;
+        if (dSq < bestDistSq) {
+          bestDistSq = dSq;
+          bestSegIdx = i;
+          bestAlpha = alpha;
+        }
+      }
+
+      const s0 = roadSamples[bestSegIdx];
+      const s1 = roadSamples[Math.min(NUM_SAMPLES, bestSegIdx + 1)];
+      const centerPos = new THREE.Vector3().lerpVectors(s0.pos, s1.pos, bestAlpha);
+      const tangent = new THREE.Vector3().lerpVectors(s0.tangent, s1.tangent, bestAlpha).normalize();
+      const flatTangent = new THREE.Vector3(tangent.x, 0, tangent.z).normalize();
+      const right = new THREE.Vector3(-flatTangent.z, 0, flatTangent.x).normalize();
+      const latOffset = (pos.x - centerPos.x) * right.x + (pos.z - centerPos.z) * right.z;
+
+      return {
+        segIdx: bestSegIdx,
+        alpha: bestAlpha,
+        centerPos,
+        tangent,
+        flatTangent,
+        right,
+        latOffset,
+        realElev: THREE.MathUtils.lerp(s0.realElev, s1.realElev, bestAlpha),
+        slopePct: THREE.MathUtils.lerp(s0.slopePct, s1.slopePct, bestAlpha)
+      };
+    }
+
+    function updatePhysics(dt) {
+      if (raceFinished) return;
+
+      if ((keys.up || keys.down) && !timerStarted) {
+        timerStarted = true;
+      }
+      if (timerStarted) {
+        elapsedTime += dt;
+      }
+
+      const curSample = roadSamples[nearestSampleIdx];
+      const slopeRad = Math.atan2(curSample.tangent.y, Math.hypot(curSample.tangent.x, curSample.tangent.z));
+
+      // 引擎加減速與坡度重力影響
+      const maxForwardSpeed = 48.5; // ~175 km/h
+      const maxReverseSpeed = -14.0;
+      const accelForce = 26.5;
+      const brakeForce = 42.0;
+      const rollingDrag = 0.36;
+
+      if (keys.up) {
+        speed += accelForce * dt;
+      } else if (keys.down) {
+        if (speed > 1.0) {
+          speed -= brakeForce * dt;
+        } else {
+          speed -= 16.0 * dt;
+        }
+      } else {
+        speed -= speed * rollingDrag * dt;
+      }
+
+      // 爬坡微幅重力阻力（保留遊戲爽快感）
+      speed -= Math.sin(slopeRad) * 4.8 * dt;
+      speed = THREE.MathUtils.clamp(speed, maxReverseSpeed, maxForwardSpeed);
+
+      // 轉向與手煞車甩尾側滑
+      const steerInput = (keys.left ? 1 : 0) - (keys.right ? 1 : 0);
+      const speedFactor = THREE.MathUtils.clamp(Math.abs(speed) / 14, 0.35, 1.0);
+      const targetSteer = steerInput * 0.56 * speedFactor;
+      steerAngle = THREE.MathUtils.lerp(steerAngle, targetSteer, Math.min(1, dt * 11));
+
+      const isHandbrake = keys.drift && Math.abs(speed) > 9.5;
+      const turnRate = (isHandbrake ? 2.45 : 1.95) * (speed >= 0 ? 1 : -1);
+      if (Math.abs(speed) > 0.4) {
+        heading += steerAngle * turnRate * THREE.MathUtils.clamp(Math.abs(speed) / 10, 0.25, 1.15) * dt;
+      }
+
+      // 速度方向角追隨車頭朝向（甩尾時降低側向抓地力產生滑移角）
+      const gripRate = isHandbrake ? 3.2 : 8.8;
+      let angleDiff = heading - velAngle;
+      while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+      while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+      velAngle += angleDiff * Math.min(1, gripRate * dt);
+
+      if (isHandbrake) {
+        speed *= (1 - 0.28 * dt);
+      }
+
+      // 累積甩尾積分
+      const slipAngle = Math.abs(angleDiff);
+      if (slipAngle > 0.16 && speed > 10) {
+        driftScore += Math.floor(slipAngle * speed * dt * 28);
+      }
+
+      // 更新車輛水平座標
+      let vx = Math.sin(velAngle) * speed;
+      let vz = Math.cos(velAngle) * speed;
+      carPos.x += vx * dt;
+      carPos.z += vz * dt;
+
+      // 連續賽道投影與 2D 速度向量正交分解貼牆滑行
+      const proj = projectOntoRoadContinuous(carPos, nearestSampleIdx);
+      nearestSampleIdx = proj.segIdx;
+      const wallLimit = ROAD_HALF_WIDTH - 0.92;
+
+      if (Math.abs(proj.latOffset) > wallLimit) {
+        const sideSign = Math.sign(proj.latOffset);
+        // 將車輛位置平滑貼齊連續護欄內緣
+        carPos.x = proj.centerPos.x + proj.right.x * (sideSign * wallLimit);
+        carPos.z = proj.centerPos.z + proj.right.z * (sideSign * wallLimit);
+
+        // 將 2D 速度向量分解為平行護欄切線分量 vt 與垂直撞入法線分量 vn
+        const vt = vx * proj.flatTangent.x + vz * proj.flatTangent.z;
+        const vn = vx * proj.right.x + vz * proj.right.z;
+
+        if (vn * sideSign > 0) {
+          const impactNormalSpeed = Math.abs(vn);
+          // 僅微幅回彈並保留 93% 以上切線前進動能，實現絲滑貼牆滑行
+          const newVn = -vn * 0.12;
+          const slideFriction = 1 - Math.min(0.14, impactNormalSpeed * 0.011);
+          const newVt = vt * slideFriction;
+
+          vx = proj.flatTangent.x * newVt + proj.right.x * newVn;
+          vz = proj.flatTangent.z * newVt + proj.right.z * newVn;
+
+          const newSpeedMag = Math.hypot(vx, vz);
+          if (speed >= 0) {
+            speed = newSpeedMag;
+            if (newSpeedMag > 0.001) velAngle = Math.atan2(vx, vz);
+          } else {
+            speed = -newSpeedMag;
+            if (newSpeedMag > 0.001) velAngle = Math.atan2(-vx, -vz);
+          }
+
+          // 依車輛目前實際朝向自動判斷順向（上山）或逆向（回頭下山），僅在車頭朝向牆內時柔和導正
+          const carForwardX = Math.sin(heading);
+          const carForwardZ = Math.cos(heading);
+          const alignDot = carForwardX * proj.flatTangent.x + carForwardZ * proj.flatTangent.z;
+          const roadHeading = Math.atan2(proj.flatTangent.x, proj.flatTangent.z);
+          const targetWallHeading = alignDot >= 0 ? roadHeading : roadHeading + Math.PI;
+
+          const noseIntoWall = (carForwardX * proj.right.x + carForwardZ * proj.right.z) * sideSign;
+          if (noseIntoWall > 0) {
+            let hDiff = targetWallHeading - heading;
+            while (hDiff > Math.PI) hDiff -= Math.PI * 2;
+            while (hDiff < -Math.PI) hDiff += Math.PI * 2;
+            heading += hDiff * Math.min(1, dt * 6.5);
+          }
+
+          if (impactNormalSpeed > 1.8 && Math.abs(speed) > 6) {
+            cameraShake = Math.min(0.35, impactNormalSpeed * 0.025);
+            const sparkOrigin = carPos.clone()
+              .addScaledVector(proj.right, sideSign * 0.85)
+              .add(new THREE.Vector3(0, 0.45, 0));
+            spawnWallSparks(sparkOrigin, proj.flatTangent, sideSign, impactNormalSpeed);
+          }
+        }
+      }
+
+      // 貼齊連續路面高度與車身俯仰/側傾姿態
+      carPos.y = proj.centerPos.y;
+      carGroup.position.copy(carPos);
+
+      const pitchAngle = -Math.asin(THREE.MathUtils.clamp(proj.tangent.y, -0.5, 0.5));
+      carGroup.rotation.order = 'YXZ';
+      carGroup.rotation.y = heading;
+      carGroup.rotation.x = pitchAngle;
+
+      const targetRoll = THREE.MathUtils.clamp(-steerAngle * (speed / 28) * 0.16, -0.14, 0.14);
+      bodyRoll = THREE.MathUtils.lerp(bodyRoll, targetRoll, Math.min(1, dt * 10));
+      carVisual.rotation.z = bodyRoll;
+
+      // 車輪轉動與尾燈亮度
+      frontWheelPivots.forEach(p => { p.rotation.y = steerAngle * 0.7; });
+      allWheels.forEach(w => { w.rotation.x += (speed / 0.36) * dt; });
+      brakeLightMat.emissiveIntensity = keys.down || isHandbrake ? 2.4 : 0.45;
+
+      // 太陽光陰影跟隨車輛移動
+      dirLight.position.set(carPos.x + 220, carPos.y + 340, carPos.z - 180);
+      dirLight.target.position.copy(carPos);
+      dirLight.target.updateMatrixWorld();
+
+      // 地標觸發與終點判斷
+      const kmh = Math.abs(speed) * 3.6;
+      if (kmh > maxSpeedReached) maxSpeedReached = kmh;
+
+      for (let i = 0; i < landmarkTriggers.length; i++) {
+        const lt = landmarkTriggers[i];
+        if (!lt.triggered && Math.abs(nearestSampleIdx - lt.index) < 16) {
+          lt.triggered = true;
+          showToast(`📍 ${lt.text}`);
+        }
+      }
+
+      if (nearestSampleIdx >= NUM_SAMPLES - 12 && !raceFinished) {
+        raceFinished = true;
+        document.getElementById('finish-time').textContent = formatTime(elapsedTime);
+        document.getElementById('finish-max-speed').textContent = `${Math.round(maxSpeedReached)} km/h`;
+        document.getElementById('finish-drift').textContent = `${driftScore} PT`;
+        document.getElementById('finish-modal').classList.remove('hidden');
+        document.getElementById('finish-modal').classList.add('flex');
+      }
+
+      updateHUD(kmh, proj);
+    }
+
+    function formatTime(sec) {
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      const tenths = Math.floor((sec * 10) % 10);
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${tenths}`;
+    }
+
+    function updateHUD(kmh, proj) {
+      document.getElementById('hud-speed').textContent = Math.round(kmh);
+      document.getElementById('hud-drift').textContent = `${driftScore} PT`;
+      document.getElementById('hud-elev').textContent = `${Math.round(proj.realElev)}m`;
+      const slopeRounded = Math.round(proj.slopePct);
+      document.getElementById('hud-slope').textContent = `${slopeRounded >= 0 ? '+' : ''}${slopeRounded}%`;
+
+      const pct = THREE.MathUtils.clamp((nearestSampleIdx / NUM_SAMPLES) * 100, 0, 100);
+      document.getElementById('hud-progress').textContent = `${pct.toFixed(1)}%`;
+      document.getElementById('hud-time').textContent = formatTime(elapsedTime);
+
+      // 檔位估算
+      let gear = 'N';
+      if (speed < -0.5) gear = 'R';
+      else if (kmh > 142) gear = '6';
+      else if (kmh > 112) gear = '5';
+      else if (kmh > 82) gear = '4';
+      else if (kmh > 52) gear = '3';
+      else if (kmh > 24) gear = '2';
+      else if (kmh > 1) gear = '1';
+      document.getElementById('hud-gear').textContent = gear;
+
+      // 最近彎道編號顯示
+      let currentBendLabel = nearestSampleIdx < 50 ? '起點段' : '山道巡航';
+      for (let i = bendMarkers.length - 1; i >= 0; i--) {
+        if (nearestSampleIdx >= bendMarkers[i].sampleIndex - 12) {
+          currentBendLabel = `第 ${bendMarkers[i].bendNum} / 36 彎`;
+          break;
+        }
+      }
+      document.getElementById('hud-bend').textContent = currentBendLabel;
+    }
+
+    function updateCamera(dt) {
+      const forward = new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading));
+      const desiredPos = new THREE.Vector3();
+      const desiredLook = new THREE.Vector3();
+
+      if (cameraMode === 0) {
+        // 追尾視角
+        desiredPos.copy(carPos).addScaledVector(forward, -9.2).add(new THREE.Vector3(0, 3.85, 0));
+        desiredLook.copy(carPos).addScaledVector(forward, 11.0).add(new THREE.Vector3(0, 1.4, 0));
+        camCurrentPos.lerp(desiredPos, Math.min(1, dt * 8.5));
+        camLookTarget.lerp(desiredLook, Math.min(1, dt * 11.5));
+      } else if (cameraMode === 1) {
+        // 引擎蓋第一人稱視角
+        desiredPos.copy(carPos).addScaledVector(forward, 0.65).add(new THREE.Vector3(0, 1.42, 0));
+        desiredLook.copy(carPos).addScaledVector(forward, 18.0).add(new THREE.Vector3(0, 1.15, 0));
+        camCurrentPos.copy(desiredPos);
+        camLookTarget.copy(desiredLook);
+      } else {
+        // 高空鳥瞰彎道預判視角
+        desiredPos.copy(carPos).addScaledVector(forward, -22.0).add(new THREE.Vector3(0, 18.5, 0));
+        desiredLook.copy(carPos).addScaledVector(forward, 14.0);
+        camCurrentPos.lerp(desiredPos, Math.min(1, dt * 6.0));
+        camLookTarget.lerp(desiredLook, Math.min(1, dt * 8.0));
+      }
+
+      // 動態視野（速度感拉伸）
+      const targetFov = cameraMode === 1 ? 68 : 60 + THREE.MathUtils.clamp(Math.abs(speed) * 0.34, 0, 16);
+      camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, Math.min(1, dt * 6));
+      camera.updateProjectionMatrix();
+
+      camera.position.copy(camCurrentPos);
+      if (cameraShake > 0.001) {
+        camera.position.x += (Math.random() - 0.5) * cameraShake;
+        camera.position.y += (Math.random() - 0.5) * cameraShake;
+        cameraShake *= Math.pow(0.04, dt);
+      }
+      camera.lookAt(camLookTarget);
+    }
+
+    // =========================================================================
+    // 9. 右上角小地圖預渲染與即時更新
+    // =========================================================================
+    const minimapCanvas = document.getElementById('minimap');
+    const minimapCtx = minimapCanvas.getContext('2d');
+    const minimapBg = document.createElement('canvas');
+    minimapBg.width = minimapCanvas.width;
+    minimapBg.height = minimapCanvas.height;
+
+    let mapBounds = { minX: -1500, maxX: 1500, minZ: -600, maxZ: 600 };
+
+    function toMinimapXY(wx, wz) {
+      const pad = 14;
+      const w = minimapCanvas.width - pad * 2;
+      const h = minimapCanvas.height - pad * 2;
+      const nx = (wx - mapBounds.minX) / Math.max(1, mapBounds.maxX - mapBounds.minX);
+      const ny = (wz - mapBounds.minZ) / Math.max(1, mapBounds.maxZ - mapBounds.minZ);
+      return { x: pad + nx * w, y: pad + ny * h };
+    }
+
+    function initMinimapBackground() {
+      document.getElementById('hud-total-dist').textContent = `${(totalTrackLength / 1000).toFixed(1)} KM`;
+
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (let i = 0; i <= NUM_SAMPLES; i += 4) {
+        const p = roadSamples[i].pos;
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.z < minZ) minZ = p.z;
+        if (p.z > maxZ) maxZ = p.z;
+      }
+      mapBounds = { minX: minX - 80, maxX: maxX + 80, minZ: minZ - 80, maxZ: maxZ + 80 };
+
+      const ctx = minimapBg.getContext('2d');
+      ctx.clearRect(0, 0, minimapBg.width, minimapBg.height);
+
+      // 若開啟等高線顯示，在小地圖上同步繪製 10m / 50m / 100m 地形等高線紋理
+      if (terrainContourUniforms.uShowContours.value > 0.5) {
+        const gw = 115;
+        const gh = 73;
+        const elevGrid = new Float32Array(gw * gh);
+        for (let gy = 0; gy < gh; gy++) {
+          const wz = mapBounds.minZ + (gy / (gh - 1)) * (mapBounds.maxZ - mapBounds.minZ);
+          for (let gx = 0; gx < gw; gx++) {
+            const wx = mapBounds.minX + (gx / (gw - 1)) * (mapBounds.maxX - mapBounds.minX);
+            elevGrid[gy * gw + gx] = BASE_ELEV + getTerrainHeightAt(wx, wz) / ELEV_SCALE;
+          }
+        }
+
+        const cellW = minimapBg.width / (gw - 1);
+        const cellH = minimapBg.height / (gh - 1);
+        for (let level = 300; level <= 1020; level += 10) {
+          const is100 = level % 100 === 0;
+          const is50 = level % 50 === 0;
+          ctx.beginPath();
+          for (let gy = 0; gy < gh - 1; gy++) {
+            for (let gx = 0; gx < gw - 1; gx++) {
+              const e00 = elevGrid[gy * gw + gx] - level;
+              const e10 = elevGrid[gy * gw + gx + 1] - level;
+              const e01 = elevGrid[(gy + 1) * gw + gx] - level;
+              const e11 = elevGrid[(gy + 1) * gw + gx + 1] - level;
+              const minE = Math.min(e00, e10, e01, e11);
+              const maxE = Math.max(e00, e10, e01, e11);
+              if (minE > 0 || maxE < 0) continue;
+
+              const pts = [];
+              if ((e00 < 0) !== (e10 < 0)) pts.push([gx + e00 / (e00 - e10), gy]);
+              if ((e10 < 0) !== (e11 < 0)) pts.push([gx + 1, gy + e10 / (e10 - e11)]);
+              if ((e01 < 0) !== (e11 < 0)) pts.push([gx + e01 / (e01 - e11), gy + 1]);
+              if ((e00 < 0) !== (e01 < 0)) pts.push([gx, gy + e00 / (e00 - e01)]);
+              if (pts.length >= 2) {
+                ctx.moveTo(pts[0][0] * cellW, pts[0][1] * cellH);
+                ctx.lineTo(pts[1][0] * cellW, pts[1][1] * cellH);
+              }
+            }
+          }
+          ctx.strokeStyle = is100
+            ? 'rgba(217, 119, 6, 0.34)'
+            : is50
+            ? 'rgba(148, 163, 184, 0.2)'
+            : 'rgba(148, 163, 184, 0.09)';
+          ctx.lineWidth = is100 ? 1.1 : 0.65;
+          ctx.stroke();
+        }
+      }
+
+      // 繪製九芎坑溪與南靖溪水系
+      [creekSamples, southCreekSamples].forEach(stream => {
+        ctx.beginPath();
+        stream.forEach((cp, idx) => {
+          const pt = toMinimapXY(cp.x, cp.z);
+          if (idx === 0) ctx.moveTo(pt.x, pt.y);
+          else ctx.lineTo(pt.x, pt.y);
+        });
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.38)';
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+      });
+
+      // 繪製 162 甲線 GPX 全線底軌
+      ctx.beginPath();
+      for (let i = 0; i <= NUM_SAMPLES; i += 3) {
+        const p = roadSamples[i].pos;
+        const pt = toMinimapXY(p.x, p.z);
+        if (i === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      }
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.55)';
+      ctx.lineWidth = 3.2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+
+      // 起點與終點標記
+      const startPt = toMinimapXY(roadSamples[0].pos.x, roadSamples[0].pos.z);
+      ctx.fillStyle = '#34d399';
+      ctx.beginPath();
+      ctx.arc(startPt.x, startPt.y, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      const endPt = toMinimapXY(roadSamples[NUM_SAMPLES].pos.x, roadSamples[NUM_SAMPLES].pos.z);
+      ctx.fillStyle = '#f43f5e';
+      ctx.beginPath();
+      ctx.arc(endPt.x, endPt.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function renderMinimap() {
+      minimapCtx.clearRect(0, 0, minimapCanvas.width, minimapCanvas.height);
+      minimapCtx.drawImage(minimapBg, 0, 0);
+
+      // 已行駛路段高亮
+      minimapCtx.beginPath();
+      for (let i = 0; i <= nearestSampleIdx; i += 4) {
+        const p = roadSamples[i].pos;
+        const pt = toMinimapXY(p.x, p.z);
+        if (i === 0) minimapCtx.moveTo(pt.x, pt.y);
+        else minimapCtx.lineTo(pt.x, pt.y);
+      }
+      minimapCtx.strokeStyle = '#38bdf8';
+      minimapCtx.lineWidth = 2.6;
+      minimapCtx.stroke();
+
+      // 玩家車輛位置與朝向箭頭
+      const carPt = toMinimapXY(carPos.x, carPos.z);
+      minimapCtx.save();
+      minimapCtx.translate(carPt.x, carPt.y);
+      minimapCtx.rotate(-heading + Math.PI / 2);
+      minimapCtx.fillStyle = '#facc15';
+      minimapCtx.beginPath();
+      minimapCtx.moveTo(6, 0);
+      minimapCtx.lineTo(-4, -3.8);
+      minimapCtx.lineTo(-2, 0);
+      minimapCtx.lineTo(-4, 3.8);
+      minimapCtx.closePath();
+      minimapCtx.fill();
+      minimapCtx.restore();
+    }
+
+    // 視窗大小自適應
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // 主渲染迴圈
+    let lastTime = performance.now();
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      lastTime = now;
+
+      updatePhysics(dt);
+      updateSparks(dt);
+      updateCamera(dt);
+      renderMinimap();
+      renderer.render(scene, camera);
+    }
+
+    window.onload = function () {
+      initMinimapBackground();
+      resetToStart();
+      lastTime = performance.now();
+      requestAnimationFrame(animate);
+    };
+  </script>
+</body>
+</html>
