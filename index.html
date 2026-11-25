@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>梅山三十六彎 · 縣道162甲  賽車</title>
+  <title>梅山三十六彎 · 縣道162甲  Bends monkey</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
@@ -91,11 +91,11 @@
       </div>
     </div>
 
-    <!-- 右上：含 10m 等高線的 162 甲線小地圖 -->
+    <!-- 右上：含等高線的 162 甲線小地圖 -->
     <div class="glass-panel rounded-2xl p-2 pointer-events-auto flex flex-col items-center">
       <canvas id="minimap-canvas" width="336" height="256" style="width: 168px; height: 128px;" class="rounded-xl bg-slate-950/85 block"></canvas>
       <div class="w-full flex justify-between items-center px-1 pt-1 text-[10px] text-slate-300">
-        <span>10m 等高線圖</span>
+        <span>等高線圖</span>
         <span id="hud-drift" class="text-amber-400 font-bold">甩尾: 0</span>
       </div>
     </div>
@@ -164,7 +164,7 @@
     <!-- 右手油門／煞車／手煞車 -->
     <div class="flex items-end gap-2 pointer-events-auto">
       <button id="touch-handbrake" class="touch-btn w-12 h-12 rounded-2xl flex items-center justify-center text-amber-300 text-xs font-black">手煞</button>
-      <button id="touch-brake" class="touch-btn w-13 h-14 px-3 rounded-2xl flex items-center justify-center text-rose-300 text-xs font-black">倒退</button>
+      <button id="touch-brake" class="touch-btn w-13 h-14 px-3 rounded-2xl flex items-center justify-center text-rose-300 text-xs font-black">煞車</button>
       <button id="touch-gas" class="touch-btn w-14 h-16 rounded-2xl flex items-center justify-center text-emerald-300 text-sm font-black">油門</button>
     </div>
   </div>
@@ -1060,7 +1060,7 @@
     buildRoadAndGuardrails();
 
     // =========================================================================
-    // 5. 全區 3D 山脈與溪谷地形（無 3D 等高線、確保絕不穿模路面）
+    // 5. 全區 3D 山脈與溪谷地形（依據山影灰階圖自然化高低分布，保留原有顏色與植被）
     // =========================================================================
     const GRID_CELL = 36;
     const roadSpatialGrid = new Map();
@@ -1073,7 +1073,7 @@
       roadSpatialGrid.get(key).push(p);
     }
 
-    // 九芎坑溪谷路徑
+    // 九芎坑溪谷路徑（北側 V 字型蝕溝溪谷）
     const creekPts = [
       gpsToWorld(23.5682, 120.5695, 275),
       gpsToWorld(23.5653, 120.5735, 310),
@@ -1083,6 +1083,42 @@
     ];
     const creekCurve = new THREE.CatmullRomCurve3(creekPts);
     const creekSamples = creekCurve.getSpacedPoints(120);
+
+    // 南靖溪河谷路徑（南側深谷，承接半路店陡峭山坡）
+    const nanjingCreekPts = [
+      gpsToWorld(23.5565, 120.5725, 265),
+      gpsToWorld(23.5558, 120.5780, 290),
+      gpsToWorld(23.5552, 120.5840, 320),
+      gpsToWorld(23.5554, 120.5905, 365)
+    ];
+    const nanjingCreekSamples = new THREE.CatmullRomCurve3(nanjingCreekPts).getSpacedPoints(90);
+
+    // 灰階山影圖關鍵地貌錨點：東南角「龜山（1050m）」主峰與「大半天寮」緩坡台地
+    const guishanPeakPos = gpsToWorld(23.5578, 120.5988, 1050.0);
+    const bantianliaoCenter = gpsToWorld(23.5618, 120.5765, 395.0);
+
+    // 自然樹枝狀山脊（Spurs）與 V 型蝕溝（Ravines）分形高程函數（純確定性三角分形）
+    function computeNaturalRidgeRelief(x, z) {
+      // 模擬東北向西南傾斜的梅山主稜線與分支山嘴
+      const wx = x + 38.0 * Math.sin(z * 0.0048) + 18.0 * Math.cos(x * 0.0062);
+      const wz = z + 34.0 * Math.cos(x * 0.0051) - 16.0 * Math.sin(z * 0.0068);
+
+      // 三層 Ridged Multifractal（尖銳山脊＋自然凹折蝕溝）
+      const n1 = Math.sin(wx * 0.0052 + wz * 0.0036) * Math.cos(wz * 0.0058 - wx * 0.0024);
+      const ridge1 = Math.pow(1.0 - Math.abs(n1), 1.65);
+
+      const n2 = Math.sin(wx * 0.0115 - wz * 0.0092 + 1.3) * Math.cos(wz * 0.0108 + wx * 0.0074);
+      const ridge2 = Math.pow(1.0 - Math.abs(n2), 1.5);
+
+      const n3 = Math.sin(wx * 0.024 + wz * 0.021) * Math.cos(wz * 0.022 - wx * 0.019);
+      const ridge3 = Math.pow(1.0 - Math.abs(n3), 1.35);
+
+      // 蝕溝下切（模擬灰階圖中的深色山溝陰影帶）
+      const gullyWave = Math.sin(wx * 0.0082 + Math.sin(wz * 0.0065) * 1.6);
+      const gullyCut = Math.pow(Math.max(0, gullyWave), 2.2) * 34.0;
+
+      return (ridge1 - 0.48) * 58.0 + (ridge2 - 0.45) * 26.0 + (ridge3 - 0.45) * 10.5 - gullyCut;
+    }
 
     // 預先計算終點「太平雲梯」左右橋塔錨點，讓 3D 山脈地形與吊橋精準貼合
     const taipingViewSample = roadSamples[Math.max(0, NUM_SAMPLES - 36)];
@@ -1121,6 +1157,7 @@
       let weightedSum = 0;
       let weightTotal = 0;
       let minRoadClearanceY = Infinity;
+      let nearestRoadDist = Infinity;
 
       for (let dx = -3; dx <= 3; dx++) {
         for (let dz = -3; dz <= 3; dz++) {
@@ -1130,6 +1167,7 @@
             const rp = bucket[k];
             const distSq = (x - rp.x) * (x - rp.x) + (z - rp.z) * (z - rp.z);
             const dist = Math.sqrt(distSq);
+            if (dist < nearestRoadDist) nearestRoadDist = dist;
 
             // 路面安全包絡：確保 3D 山坡絕不穿進柏油路面
             if (dist < 14.5) {
@@ -1137,35 +1175,62 @@
               minRoadClearanceY = Math.min(minRoadClearanceY, rp.y - trench);
             }
 
-            if (dist < 120.0) {
-              const w = 1.0 / (distSq + 65.0);
-              weightedSum += (rp.y - 2.2) * w;
+            if (dist < 145.0) {
+              const w = 1.0 / (distSq + 95.0);
+              weightedSum += (rp.y - 2.0) * w;
               weightTotal += w;
             }
           }
         }
       }
 
-      // 大尺度梅山區域山勢（由西北向東南緩升至海拔 931m+）
+      // 大尺度梅山區域宏觀山勢（由西南低谷向東北主稜與東南龜山爬升）+ 自然山脊蝕溝
       const eastFactor = THREE.MathUtils.clamp((x + 1250) / 2600, 0, 1);
-      const southFactor = THREE.MathUtils.clamp((z + 550) / 1150, 0, 1);
-      let macroH = 12 + Math.pow(eastFactor, 1.25) * 610 + southFactor * 42;
-      macroH += Math.sin(x * 0.0042) * 26 + Math.cos(z * 0.0048) * 22 + Math.sin((x + z) * 0.0085) * 11;
+      const northFactor = THREE.MathUtils.clamp((-z + 550) / 1150, 0, 1);
+      const relief = computeNaturalRidgeRelief(x, z);
+      let macroH = 8 + Math.pow(eastFactor, 1.28) * 615 + northFactor * 68 + relief;
+
+      // 「大半天寮」緩坡農園台地（減緩起伏並維持約 385～415m 台地高度）
+      const dBantian = Math.hypot(x - bantianliaoCenter.x, z - bantianliaoCenter.z);
+      if (dBantian < 185.0) {
+        const plateauFactor = 1.0 - THREE.MathUtils.smoothstep(dBantian, 35.0, 185.0);
+        macroH = THREE.MathUtils.lerp(macroH, bantianliaoCenter.y + relief * 0.22, plateauFactor * 0.78);
+      }
+
+      // 東南角「龜山（1050m）」獨立山頭主峰
+      const dGuishan = Math.hypot(x - guishanPeakPos.x, z - guishanPeakPos.z);
+      if (dGuishan < 320.0) {
+        const peakFactor = Math.pow(1.0 - THREE.MathUtils.smoothstep(dGuishan, 18.0, 320.0), 1.45);
+        const targetPeakY = guishanPeakPos.y + relief * 0.25;
+        macroH = THREE.MathUtils.lerp(macroH, Math.max(macroH, targetPeakY), peakFactor * 0.92);
+      }
 
       let finalH = macroH;
       if (weightTotal > 0) {
         const roadGuidedH = weightedSum / weightTotal;
-        const blend = THREE.MathUtils.clamp(weightTotal * 420.0, 0, 0.94);
+        // 遠離路面後自然過渡回山脊與蝕溝地形，讓山壁路塹與外坡更自然
+        const roadProximity = 1.0 - THREE.MathUtils.smoothstep(nearestRoadDist, 9.0, 115.0);
+        const blend = THREE.MathUtils.clamp(weightTotal * 480.0, 0, 0.90) * (0.32 + 0.68 * roadProximity);
         finalH = THREE.MathUtils.lerp(macroH, roadGuidedH, blend);
       }
 
-      // 九芎坑溪河谷下切
+      // 北側九芎坑溪 V 字型深切溪谷
       for (let c = 0; c < creekSamples.length; c += 2) {
         const cp = creekSamples[c];
         const cd = Math.hypot(x - cp.x, z - cp.z);
-        if (cd < 38.0) {
-          const riverFactor = 1.0 - THREE.MathUtils.smoothstep(cd, 6.0, 38.0);
-          finalH = THREE.MathUtils.lerp(finalH, cp.y - 4.5, riverFactor * 0.85);
+        if (cd < 52.0) {
+          const riverFactor = Math.pow(1.0 - THREE.MathUtils.smoothstep(cd, 6.0, 52.0), 1.25);
+          finalH = THREE.MathUtils.lerp(finalH, cp.y - 7.5, riverFactor * 0.88);
+        }
+      }
+
+      // 南側南靖溪深谷（半路店南側急降懸崖下切）
+      for (let nc = 0; nc < nanjingCreekSamples.length; nc += 2) {
+        const ncp = nanjingCreekSamples[nc];
+        const ncd = Math.hypot(x - ncp.x, z - ncp.z);
+        if (ncd < 95.0) {
+          const southGorgeFactor = Math.pow(1.0 - THREE.MathUtils.smoothstep(ncd, 10.0, 95.0), 1.3);
+          finalH = THREE.MathUtils.lerp(finalH, ncp.y - 12.0, southGorgeFactor * 0.86);
         }
       }
 
@@ -1538,50 +1603,141 @@
       return group;
     }
 
-    function createConvexMirrorMesh() {
-      const mirrorGroup = new THREE.Group();
-      // 鍍鋅鋼管立柱
-      const pole = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.055, 0.065, 2.75, 8),
-        new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.65, roughness: 0.35 })
-      );
-      pole.position.y = 1.375;
-      mirrorGroup.add(pole);
+function createConvexMirrorMesh() {
+  const mirrorGroup = new THREE.Group();
 
-      // 鏡頭旋轉樞紐（朝向來車方向並微向下傾）
-      const headGroup = new THREE.Group();
-      headGroup.position.set(0, 2.45, 0);
+  // =====================================
+  // 1. 鍍鋅鋼管立柱
+  // =====================================
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.055, 0.065, 2.75, 12),
+    new THREE.MeshStandardMaterial({
+      color: 0x94a3b8,
+      metalness: 0.7,
+      roughness: 0.3
+    })
+  );
+  pole.position.y = 1.375;
+  mirrorGroup.add(pole);
 
-      // 橘色圓形外框
-      const rim = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.46, 0.46, 0.08, 24),
-        new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.45 })
-      );
-      rim.rotation.x = Math.PI / 2;
-      headGroup.add(rim);
+  // =====================================
+  // 2. 鏡面旋轉組
+  // =====================================
+  const headGroup = new THREE.Group();
+  headGroup.position.set(0, 2.45, 0);
 
-      // 上緣橘色遮陽帽簷
-      const visor = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.47, 0.47, 0.16, 20, 1, true, -Math.PI * 0.42, Math.PI * 0.84),
-        new THREE.MeshStandardMaterial({ color: 0xea580c, roughness: 0.45, side: THREE.DoubleSide })
-      );
-      visor.rotation.x = Math.PI / 2;
-      visor.position.z = 0.05;
-      headGroup.add(visor);
+  // =====================================
+  // 3. 鏡子背後的橘色外殼
+  // =====================================
+  const housing = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.46, 0.46, 0.13, 40),
+    new THREE.MeshStandardMaterial({
+      color: 0xf97316,
+      roughness: 0.65
+    })
+  );
+  housing.rotation.x = Math.PI / 2;
+  housing.position.z = -0.025;
+  headGroup.add(housing);
 
-      // 銀色凸面反光鏡面
-      const glass = new THREE.Mesh(
-        new THREE.SphereGeometry(0.41, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.35),
-        new THREE.MeshStandardMaterial({ color: 0xe2e8f0, metalness: 0.92, roughness: 0.08 })
-      );
-      glass.rotation.x = Math.PI / 2;
-      glass.position.z = -0.27;
-      headGroup.add(glass);
+  // =====================================
+  // 4. 黑色內側墊圈
+  // =====================================
+  const gasket = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.405, 0.405, 0.045, 40),
+    new THREE.MeshStandardMaterial({
+      color: 0x292524,
+      roughness: 0.85
+    })
+  );
+  gasket.rotation.x = Math.PI / 2;
+  gasket.position.z = 0.055;
+  headGroup.add(gasket);
 
-      mirrorGroup.add(headGroup);
-      mirrorGroup.userData.head = headGroup;
-      return mirrorGroup;
-    }
+  // =====================================
+  // 5. 橘色外框
+  // =====================================
+  const rim = new THREE.Mesh(
+    new THREE.TorusGeometry(0.425, 0.045, 12, 48),
+    new THREE.MeshStandardMaterial({
+      color: 0xfb923c,
+      roughness: 0.5
+    })
+  );
+  rim.position.z = 0.075;
+  headGroup.add(rim);
+
+  // =====================================
+  // 6. 銀色凸面反射鏡
+  // =====================================
+  // 利用球面的一部分製作真正的凸面效果
+  const mirrorRadius = 0.58;
+  const mirrorAngle = Math.asin(0.39 / mirrorRadius);
+
+  const glass = new THREE.Mesh(
+    new THREE.SphereGeometry(
+      mirrorRadius,
+      48,
+      32,
+      0,
+      Math.PI * 2,
+      0,
+      mirrorAngle
+    ),
+    new THREE.MeshStandardMaterial({
+      color: 0xdce5ed,
+      metalness: 0.85,
+      roughness: 0.18,
+      side: THREE.DoubleSide
+    })
+  );
+
+  glass.rotation.x = Math.PI / 2;
+  glass.position.z = 0.075 - mirrorRadius * Math.cos(mirrorAngle);
+  headGroup.add(glass);
+
+  // =====================================
+  // 7. 上緣橘色遮陽帽簷
+  // =====================================
+  const visor = new THREE.Mesh(
+    new THREE.TorusGeometry(
+      0.445,
+      0.035,
+      10,
+      40,
+      Math.PI
+    ),
+    new THREE.MeshStandardMaterial({
+      color: 0xea580c,
+      roughness: 0.5
+    })
+  );
+  visor.position.z = 0.095;
+  headGroup.add(visor);
+
+  // =====================================
+  // 8. 背後固定支架
+  // =====================================
+  const bracket = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.035, 0.035, 0.32, 10),
+    new THREE.MeshStandardMaterial({
+      color: 0x64748b,
+      metalness: 0.7,
+      roughness: 0.35
+    })
+  );
+  bracket.rotation.x = Math.PI / 2;
+  bracket.position.z = -0.22;
+  headGroup.add(bracket);
+
+  // =====================================
+  // 9. 組合
+  // =====================================
+  mirrorGroup.add(headGroup);
+  mirrorGroup.userData.head = headGroup;
+
+  return mirrorGroup;
+}
 
     function buildAll36BendsAndMirrors() {
       bendMarkers.forEach(bm => {
@@ -2198,8 +2354,6 @@
         hotelAimTarget.y = hotelComplex.position.y;
         hotelComplex.lookAt(hotelAimTarget);
         landmarkGroup.add(hotelComplex);
-
-
       }
 
       // D6. 第 30 彎與第 32 彎之間的高壓桁架電塔（從第 36 彎外側護欄往下俯瞰可見塔頂橫擔與輸電線）
@@ -2487,6 +2641,56 @@
       finishArch.position.copy(endSample.pos);
       finishArch.lookAt(endSample.pos.clone().add(endSample.flatTangent));
       landmarkGroup.add(finishArch);
+
+      // 起點與終點阻擋用紐澤西護欄（防止倒車或衝出地圖邊界）
+      function buildRoadEndJerseyBarrier(sample, faceOpposite = false) {
+        const barrierGroup = new THREE.Group();
+        const totalWidth = (ROAD_HALF_WIDTH + 0.45) * 2;
+        const unitCount = 6;
+        const unitLen = totalWidth / unitCount;
+
+        // 紐澤西護欄梯形斷面（上窄下寬）
+        const jerseyShape = new THREE.Shape();
+        jerseyShape.moveTo(-0.34, 0);
+        jerseyShape.lineTo(0.34, 0);
+        jerseyShape.lineTo(0.24, 0.24);
+        jerseyShape.lineTo(0.14, 0.92);
+        jerseyShape.lineTo(-0.14, 0.92);
+        jerseyShape.lineTo(-0.24, 0.24);
+        jerseyShape.closePath();
+
+        const unitGeo = new THREE.ExtrudeGeometry(jerseyShape, {
+          depth: unitLen - 0.08,
+          bevelEnabled: false
+        });
+        unitGeo.rotateY(Math.PI / 2);
+
+        const whiteConcreteMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.78 });
+        const redHazardMat = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.65 });
+        const reflectorMat = new THREE.MeshBasicMaterial({ color: 0xfacc15 });
+
+        for (let u = 0; u < unitCount; u++) {
+          const offsetX = -totalWidth * 0.5 + u * unitLen + 0.04;
+          const block = new THREE.Mesh(unitGeo, u % 2 === 0 ? whiteConcreteMat : redHazardMat);
+          block.position.set(offsetX, 0, 0);
+          block.castShadow = true;
+          block.receiveShadow = true;
+          barrierGroup.add(block);
+
+          const reflector = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.14, 0.34), reflectorMat);
+          reflector.position.set(offsetX + unitLen * 0.5, 0.74, 0);
+          barrierGroup.add(reflector);
+        }
+
+        barrierGroup.position.copy(sample.pos);
+        const lookDir = sample.flatTangent.clone().multiplyScalar(faceOpposite ? -1 : 1);
+        barrierGroup.lookAt(sample.pos.clone().add(lookDir));
+        landmarkGroup.add(barrierGroup);
+      }
+
+      // 起點後方（第 1 彎前起跑線後方）與終點拱門後方各設一排紐澤西護欄
+      buildRoadEndJerseyBarrier(roadSamples[2], false);
+      buildRoadEndJerseyBarrier(roadSamples[NUM_SAMPLES - 1], true);
     }
 
     buildSpecialLandmarks();
@@ -2600,7 +2804,7 @@
     }
 
     // =========================================================================
-    // 8. 右上角 10 公尺等高線小地圖（獨立平滑山地高程場，消除路基凹槽）
+    // 8. 右上角 10 公尺等高線小地圖（同步自然樹枝狀山脊、溪谷與龜山主峰高程場）
     // =========================================================================
     const minimapCanvas = document.getElementById('minimap-canvas');
     const minimapCtx = minimapCanvas.getContext('2d');
@@ -2631,13 +2835,43 @@
       }
 
       const eastFactor = THREE.MathUtils.clamp((x + 1250) / 2600, 0, 1);
-      const southFactor = THREE.MathUtils.clamp((z + 550) / 1150, 0, 1);
-      let macroElev = 310 + Math.pow(eastFactor, 1.25) * 615 + southFactor * 42;
-      macroElev += Math.sin(x * 0.0042) * 26 + Math.cos(z * 0.0048) * 22;
+      const northFactor = THREE.MathUtils.clamp((-z + 550) / 1150, 0, 1);
+      const relief = computeNaturalRidgeRelief(x, z) * 0.72;
+      let macroElev = 308 + Math.pow(eastFactor, 1.28) * 615 + northFactor * 68 + relief;
+
+      const dBantian = Math.hypot(x - bantianliaoCenter.x, z - bantianliaoCenter.z);
+      if (dBantian < 185.0) {
+        const pf = 1.0 - THREE.MathUtils.smoothstep(dBantian, 35.0, 185.0);
+        macroElev = THREE.MathUtils.lerp(macroElev, bantianliaoCenter.y + BASE_ELEV, pf * 0.72);
+      }
+
+      const dGuishan = Math.hypot(x - guishanPeakPos.x, z - guishanPeakPos.z);
+      if (dGuishan < 320.0) {
+        const gf = Math.pow(1.0 - THREE.MathUtils.smoothstep(dGuishan, 18.0, 320.0), 1.45);
+        macroElev = THREE.MathUtils.lerp(macroElev, Math.max(macroElev, 1050.0), gf * 0.9);
+      }
+
+      for (let c = 0; c < creekSamples.length; c += 3) {
+        const cp = creekSamples[c];
+        const cd = Math.hypot(x - cp.x, z - cp.z);
+        if (cd < 55.0) {
+          const rf = 1.0 - THREE.MathUtils.smoothstep(cd, 8.0, 55.0);
+          macroElev = THREE.MathUtils.lerp(macroElev, cp.y + BASE_ELEV - 7.0, rf * 0.85);
+        }
+      }
+
+      for (let nc = 0; nc < nanjingCreekSamples.length; nc += 3) {
+        const ncp = nanjingCreekSamples[nc];
+        const ncd = Math.hypot(x - ncp.x, z - ncp.z);
+        if (ncd < 95.0) {
+          const sf = 1.0 - THREE.MathUtils.smoothstep(ncd, 10.0, 95.0);
+          macroElev = THREE.MathUtils.lerp(macroElev, ncp.y + BASE_ELEV - 11.0, sf * 0.85);
+        }
+      }
 
       if (weightTotal > 0) {
         const roadElev = weightedSum / weightTotal;
-        const blend = THREE.MathUtils.clamp(weightTotal * 3200.0, 0, 0.92);
+        const blend = THREE.MathUtils.clamp(weightTotal * 3200.0, 0, 0.90);
         return THREE.MathUtils.lerp(macroElev, roadElev, blend);
       }
       return macroElev;
@@ -3150,6 +3384,33 @@
           carState.heading += steerInput * 0.22 * dt;
         } else {
           carState.heading += angleDiff * 0.35 * dt;
+        }
+      }
+
+      // 起點與終點紐澤西護欄實體阻擋（防止倒車或衝過終點掉出地圖）
+      if (carState.nearestSampleIdx <= 2) {
+        const startGate = roadSamples[2];
+        const relStart = new THREE.Vector3().subVectors(carState.pos, startGate.pos);
+        const pastStart = relStart.dot(startGate.flatTangent);
+        if (pastStart < 0.85) {
+          carState.pos.addScaledVector(startGate.flatTangent, 0.85 - pastStart);
+          const vBack = carState.vel.dot(startGate.flatTangent);
+          if (vBack < 0) {
+            cameraShake = Math.min(0.25, Math.abs(vBack) * 0.025);
+            carState.vel.addScaledVector(startGate.flatTangent, -vBack);
+          }
+        }
+      } else if (carState.nearestSampleIdx >= NUM_SAMPLES - 2) {
+        const endGate = roadSamples[NUM_SAMPLES - 1];
+        const relEnd = new THREE.Vector3().subVectors(carState.pos, endGate.pos);
+        const pastEnd = relEnd.dot(endGate.flatTangent);
+        if (pastEnd > -0.85) {
+          carState.pos.addScaledVector(endGate.flatTangent, -0.85 - pastEnd);
+          const vFwd = carState.vel.dot(endGate.flatTangent);
+          if (vFwd > 0) {
+            cameraShake = Math.min(0.25, vFwd * 0.025);
+            carState.vel.addScaledVector(endGate.flatTangent, -vFwd);
+          }
         }
       }
 
