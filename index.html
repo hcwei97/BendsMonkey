@@ -6,6 +6,8 @@
   <title>梅山三十六彎 · 縣道162甲  Bends monkey</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="js/car.js"></script>
+  <script src="js/driving.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
   <style>
     * {
@@ -116,6 +118,9 @@
     <button id="btn-fog" class="glass-panel hover:bg-slate-800/90 text-white text-xs font-bold px-3.5 py-2.5 rounded-xl cursor-pointer transition">
       🌫️ 山嵐霧氣 (F)
     </button>
+    <button id="btn-post" class="glass-panel hover:bg-slate-800/90 text-white text-xs font-bold px-3.5 py-2.5 rounded-xl cursor-pointer transition">
+      ✨ 後處理 (P)
+    </button>
     <button id="btn-recover" class="glass-panel hover:bg-slate-800/90 text-amber-300 text-xs font-bold px-3.5 py-2.5 rounded-xl cursor-pointer transition">
       🔄 原地回正 (R)
     </button>
@@ -202,6 +207,44 @@
 
   <script>
     // =========================================================================
+    // 0. 真實地形 DEM 載入（meishan_h.json + meishan_h.bin，TWD97 / TM2 二度分帶）
+    //    檔案放在 index.html 同一層；需用本機伺服器開啟（file:// 無法 fetch）
+    // =========================================================================
+    const DEM_JSON_URL = 'meishan_h.json';
+    const DEM_BIN_URL = 'meishan_h.bin';
+
+    async function loadDEMData() {
+      try {
+        const meta = await (await fetch(DEM_JSON_URL)).json();
+        const buf = await (await fetch(DEM_BIN_URL)).arrayBuffer();
+        const h = new Float32Array(buf);
+        if (h.length !== meta.cols * meta.rows) {
+          throw new Error(`DEM 筆數 ${h.length} 與 cols×rows ${meta.cols * meta.rows} 不符`);
+        }
+        // 補 nodata：用同一列前一個有效值（最後退回全域最小值）
+        const nod = meta.nodata;
+        const bad = v => !Number.isFinite(v) || v < -1000 || (nod !== undefined && v === nod);
+        let minValid = Infinity;
+        for (let i = 0; i < h.length; i++) if (!bad(h[i]) && h[i] < minValid) minValid = h[i];
+        let badCount = 0;
+        for (let r = 0; r < meta.rows; r++) {
+          let last = minValid;
+          for (let c = 0; c < meta.cols; c++) {
+            const i = r * meta.cols + c;
+            if (bad(h[i])) { h[i] = last; badCount++; } else last = h[i];
+          }
+        }
+        console.log(`[DEM] 載入成功 ${meta.cols}×${meta.rows}，網格 ${meta.step} m，nodata 補值 ${badCount} 點`);
+        return { meta, h };
+      } catch (err) {
+        console.warn('[DEM] 無法載入地形檔，改用程序化地形：', err);
+        return null;
+      }
+    }
+
+    (async () => {
+    const DEM = await loadDEMData();
+    // =========================================================================
     // 1. Three.js 基礎場景、攝影機、渲染器與山林光影初始化
     // =========================================================================
     const canvas = document.getElementById('game-canvas');
@@ -225,6 +268,57 @@
     ];
     let currentFogIdx = 0;
     scene.fog = new THREE.FogExp2(fogLevels[0].color, fogLevels[0].density);
+
+    // ---- 共用：固定種子亂數（每次載入場景一致）與風吹時間 ----
+    function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+    const windU = { value: 0 };
+
+    // ---- 程序化天空穹頂：天頂漸層＋太陽光暈＋流動雲層，地平線色跟著霧色 ----
+    const skyU = {
+      uHorizon: { value: new THREE.Color(fogLevels[0].color) },
+      uZenith:  { value: new THREE.Color(0x3f86c4) },
+      uSunDir:  { value: new THREE.Vector3(320, 620, 240).normalize() },
+      uTime:    { value: 0 },
+      uCover:   { value: 0.60 },
+      uHaze:    { value: 0.0 }
+    };
+    const skyDome = new THREE.Mesh(
+      new THREE.SphereGeometry(3000, 32, 16),
+      new THREE.ShaderMaterial({
+        uniforms: skyU, side: THREE.BackSide, depthWrite: false, fog: false,
+        vertexShader: 'varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+        fragmentShader: `
+          varying vec3 vDir;
+          uniform vec3 uHorizon, uZenith, uSunDir; uniform float uTime, uCover, uHaze;
+          float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+          float noise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+            return mix(mix(hash(i),hash(i+vec2(1,0)),f.x), mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x), f.y); }
+          float fbm(vec2 p){ float v=0.0, a=0.5; for(int i=0;i<5;i++){ v+=a*noise(p); p*=2.03; a*=0.5; } return v; }
+          void main(){
+            vec3 d = normalize(vDir);
+            float h = clamp(d.y, 0.0, 1.0);
+            vec3 zen = mix(uZenith, uHorizon, uHaze);
+            vec3 col = mix(uHorizon, zen, pow(h, 0.5));
+            float sd = max(dot(d, uSunDir), 0.0);
+            col += vec3(1.0,0.93,0.78) * (pow(sd, 700.0) * 2.2 + pow(sd, 36.0) * 0.28);
+            if (d.y > 0.0) {
+              vec2 uv = d.xz / (d.y + 0.22) * 1.4 + vec2(uTime * 0.012, uTime * 0.005);
+              float c = smoothstep(uCover, uCover + 0.28, fbm(uv));
+              float shade = fbm(uv + uSunDir.xz * 0.35);
+              vec3 cloud = mix(vec3(0.80,0.84,0.90), vec3(1.0), smoothstep(0.35, 0.75, shade));
+              cloud = mix(cloud, uHorizon, 0.25);
+              col = mix(col, cloud, c * smoothstep(0.0, 0.18, d.y));
+            }
+            col = mix(col, uHorizon, smoothstep(0.12, 0.0, d.y));
+            gl_FragColor = vec4(col, 1.0);
+          }`
+      })
+    );
+    skyDome.renderOrder = -10;
+    skyDome.frustumCulled = false;
+    scene.add(skyDome);
+    const skyFogPreset = [ { cover: 0.60, haze: 0.0 }, { cover: 0.48, haze: 0.45 }, { cover: 0.34, haze: 0.85 } ];
+
 
     const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.4, 3400);
 
@@ -693,14 +787,76 @@
     const METERS_PER_DEG_LAT = 110750.0;
     const METERS_PER_DEG_LON = 111320.0 * Math.cos(REF_LAT * Math.PI / 180.0);
 
+    // TWD97 TM2（GRS80，中央經線 121°E，k0 = 0.9999，東偏 250000 m）
+    const TM2 = (() => {
+      const a = 6378137.0, f = 1 / 298.257222101, k0 = 0.9999, lon0 = 121 * Math.PI / 180, FE = 250000.0;
+      const e2 = f * (2 - f), ep2 = e2 / (1 - e2);
+      const e4 = e2 * e2, e6 = e4 * e2;
+      const M = phi => a * ((1 - e2 / 4 - 3 * e4 / 64 - 5 * e6 / 256) * phi
+        - (3 * e2 / 8 + 3 * e4 / 32 + 45 * e6 / 1024) * Math.sin(2 * phi)
+        + (15 * e4 / 256 + 45 * e6 / 1024) * Math.sin(4 * phi)
+        - (35 * e6 / 3072) * Math.sin(6 * phi));
+      function forward(latDeg, lonDeg) {
+        const phi = latDeg * Math.PI / 180, lam = lonDeg * Math.PI / 180;
+        const sn = Math.sin(phi), cs = Math.cos(phi), tn = Math.tan(phi);
+        const N = a / Math.sqrt(1 - e2 * sn * sn), T = tn * tn, C = ep2 * cs * cs, A = (lam - lon0) * cs;
+        const E = FE + k0 * N * (A + (1 - T + C) * A ** 3 / 6 + (5 - 18 * T + T * T + 72 * C - 58 * ep2) * A ** 5 / 120);
+        const Nn = k0 * (M(phi) + N * tn * (A * A / 2 + (5 - T + 9 * C + 4 * C * C) * A ** 4 / 24
+          + (61 - 58 * T + T * T + 600 * C - 330 * ep2) * A ** 6 / 720));
+        return { E, N: Nn };
+      }
+      function inverse(E, Nn) {
+        const mu = (Nn / k0) / (a * (1 - e2 / 4 - 3 * e4 / 64 - 5 * e6 / 256));
+        const e1 = (1 - Math.sqrt(1 - e2)) / (1 + Math.sqrt(1 - e2));
+        const phi1 = mu + (3 * e1 / 2 - 27 * e1 ** 3 / 32) * Math.sin(2 * mu) + (21 * e1 * e1 / 16 - 55 * e1 ** 4 / 32) * Math.sin(4 * mu)
+          + (151 * e1 ** 3 / 96) * Math.sin(6 * mu) + (1097 * e1 ** 4 / 512) * Math.sin(8 * mu);
+        const sn = Math.sin(phi1), cs = Math.cos(phi1), tn = Math.tan(phi1);
+        const C1 = ep2 * cs * cs, T1 = tn * tn, N1 = a / Math.sqrt(1 - e2 * sn * sn);
+        const R1 = a * (1 - e2) / Math.pow(1 - e2 * sn * sn, 1.5), D = (E - FE) / (N1 * k0);
+        const phi = phi1 - (N1 * tn / R1) * (D * D / 2 - (5 + 3 * T1 + 10 * C1 - 4 * C1 * C1 - 9 * ep2) * D ** 4 / 24
+          + (61 + 90 * T1 + 298 * C1 + 45 * T1 * T1 - 252 * ep2 - 3 * C1 * C1) * D ** 6 / 720);
+        const lam = lon0 + (D - (1 + 2 * T1 + C1) * D ** 3 / 6 + (5 - 2 * C1 + 28 * T1 - 3 * C1 * C1 + 8 * ep2 + 24 * T1 * T1) * D ** 5 / 120) / cs;
+        return { lat: phi * 180 / Math.PI, lon: lam * 180 / Math.PI };
+      }
+      return { forward, inverse };
+    })();
+
+    // 遊戲世界原點維持在 REF_LAT/REF_LON（既有地標與範圍數值不需改）；+X 東、-Z 北
+    const WORLD_ORIGIN_TM = TM2.forward(REF_LAT, REF_LON);
+
     function gpsToWorld(lat, lon, ele) {
+      if (DEM) {
+        const t = TM2.forward(lat, lon);
+        return new THREE.Vector3(t.E - WORLD_ORIGIN_TM.E, ele - BASE_ELEV, -(t.N - WORLD_ORIGIN_TM.N));
+      }
       const x = (lon - REF_LON) * METERS_PER_DEG_LON;
       const z = -(lat - REF_LAT) * METERS_PER_DEG_LAT;
       const y = ele - BASE_ELEV;
       return new THREE.Vector3(x, y, z);
     }
 
+    // DEM 雙線性取樣（回傳絕對海拔；範圍外夾到邊緣）
+    function demContains(x, z, margin = 0) {
+      if (!DEM) return false;
+      const m = DEM.meta, E = x + WORLD_ORIGIN_TM.E, N = -z + WORLD_ORIGIN_TM.N;
+      return E >= m.xmin + margin && E <= m.xmin + (m.cols - 1) * m.step - margin &&
+             N <= m.ymax - margin && N >= m.ymax - (m.rows - 1) * m.step + margin;
+    }
+    function sampleDEM(x, z) {
+      const m = DEM.meta, h = DEM.h;
+      const E = x + WORLD_ORIGIN_TM.E, N = -z + WORLD_ORIGIN_TM.N;
+      let fc = (E - m.xmin) / m.step, fr = (m.ymax - N) / m.step;
+      fc = Math.min(Math.max(fc, 0), m.cols - 1.0001);
+      fr = Math.min(Math.max(fr, 0), m.rows - 1.0001);
+      const c0 = Math.floor(fc), r0 = Math.floor(fr), tx = fc - c0, tz = fr - r0;
+      const i = r0 * m.cols + c0;
+      const top = h[i] * (1 - tx) + h[i + 1] * tx;
+      const bot = h[i + m.cols] * (1 - tx) + h[i + m.cols + 1] * tx;
+      return top * (1 - tz) + bot * tz;
+    }
+
     function worldToGps(x, z) {
+      if (DEM) return TM2.inverse(x + WORLD_ORIGIN_TM.E, -z + WORLD_ORIGIN_TM.N);
       const lon = REF_LON + x / METERS_PER_DEG_LON;
       const lat = REF_LAT - z / METERS_PER_DEG_LAT;
       return { lat, lon };
@@ -712,6 +868,24 @@
     const totalTrackLength = trackCurve.getLength();
     const NUM_SAMPLES = 2800;
     const spacedPts = trackCurve.getSpacedPoints(NUM_SAMPLES);
+
+    // 道路高程來源：'dem' = 沿路線取 DEM 高程再平滑（路面與地形完全對齊）；'gpx' = 沿用 GPX 高程
+    const ROAD_ELEV_SOURCE = 'dem';
+    if (DEM && ROAD_ELEV_SOURCE === 'dem') {
+      const raw = spacedPts.map(p => demContains(p.x, p.z) ? sampleDEM(p.x, p.z) - BASE_ELEV : p.y);
+      const stepLen = totalTrackLength / NUM_SAMPLES;
+      const radius = Math.max(2, Math.round(24 / stepLen));        // 約 ±24 m 高斯平滑，去除 DEM 階梯感
+      const sigma = radius / 2;
+      for (let i = 0; i <= NUM_SAMPLES; i++) {
+        let sum = 0, wsum = 0;
+        for (let k = -radius; k <= radius; k++) {
+          const j = i + k; if (j < 0 || j > NUM_SAMPLES) continue;
+          const w = Math.exp(-(k * k) / (2 * sigma * sigma));
+          sum += raw[j] * w; wsum += w;
+        }
+        spacedPts[i].y = sum / wsum;
+      }
+    }
 
     const roadSamples = [];
     for (let i = 0; i <= NUM_SAMPLES; i++) {
@@ -876,36 +1050,58 @@
     const ROAD_HALF_WIDTH = 5.4;
 
     function createAsphaltTexture() {
-      const c = document.createElement('canvas');
-      c.width = 512;
-      c.height = 512;
-      const ctx = c.getContext('2d');
+      const S = 1024, rnd = mulberry32(162);
+      const mk = () => { const c = document.createElement('canvas'); c.width = S; c.height = S; return c; };
+      const c = mk(), ctx = c.getContext('2d');
+      const bc = mk(), bctx = bc.getContext('2d');
 
-      // 柏油底色與細膩砂石顆粒
-      ctx.fillStyle = '#334155';
-      ctx.fillRect(0, 0, 512, 512);
-      for (let i = 0; i < 16000; i++) {
-        const x = Math.random() * 512;
-        const y = Math.random() * 512;
-        const v = 42 + Math.floor(Math.random() * 34);
-        ctx.fillStyle = `rgb(${v},${v + 5},${v + 12})`;
-        ctx.fillRect(x, y, 2, 2);
+      // 底色 + 大小顆粒
+      ctx.fillStyle = '#3a3e45'; ctx.fillRect(0, 0, S, S);
+      bctx.fillStyle = '#808080'; bctx.fillRect(0, 0, S, S);
+      for (let i = 0; i < 90000; i++) {
+        const x = rnd() * S, y = rnd() * S, v = 40 + Math.floor(rnd() * 50), sz = rnd() < 0.08 ? 3 : 1.6;
+        ctx.fillStyle = `rgb(${v},${v + 2},${v + 6})`; ctx.fillRect(x, y, sz, sz);
+        const g = 90 + Math.floor(rnd() * 110);
+        bctx.fillStyle = `rgb(${g},${g},${g})`; bctx.fillRect(x, y, sz, sz);
+      }
+      // 輪跡磨耗帶
+      [0.27, 0.73].forEach(px => {
+        const grad = ctx.createLinearGradient((px - 0.09) * S, 0, (px + 0.09) * S, 0);
+        grad.addColorStop(0, 'rgba(20,22,26,0)'); grad.addColorStop(0.5, 'rgba(20,22,26,0.30)'); grad.addColorStop(1, 'rgba(20,22,26,0)');
+        ctx.fillStyle = grad; ctx.fillRect((px - 0.09) * S, 0, 0.18 * S, S);
+      });
+      // 補丁
+      for (let p = 0; p < 5; p++) {
+        const w = 120 + rnd() * 200, h = 90 + rnd() * 220, x = 80 + rnd() * (S - 160 - w), y = rnd() * (S - h), v = 28 + rnd() * 16;
+        ctx.fillStyle = `rgb(${v},${v + 2},${v + 5})`; ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = 'rgba(10,10,12,0.75)'; ctx.lineWidth = 3; ctx.strokeRect(x, y, w, h);
+        bctx.fillStyle = '#6e6e6e'; bctx.fillRect(x, y, w, h);
+      }
+      // 裂縫
+      for (let k = 0; k < 14; k++) {
+        let x = 60 + rnd() * (S - 120), y = rnd() * S;
+        ctx.strokeStyle = 'rgba(12,12,14,0.8)'; bctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1.6; bctx.lineWidth = 2.4;
+        ctx.beginPath(); bctx.beginPath(); ctx.moveTo(x, y); bctx.moveTo(x, y);
+        for (let s = 0; s < 9; s++) { x += (rnd() - 0.5) * 40; y += 14 + rnd() * 30; ctx.lineTo(x, y); bctx.lineTo(x, y); }
+        ctx.stroke(); bctx.stroke();
+      }
+      // 標線：兩側白邊線 + 中央雙黃實線
+      ctx.fillStyle = '#e8e8e2'; ctx.fillRect(36, 0, 16, S); ctx.fillRect(972, 0, 16, S);
+      ctx.fillStyle = '#d6a21e'; ctx.fillRect(494, 0, 12, S); ctx.fillRect(518, 0, 12, S);
+      // 標線磨損與剝落
+      ctx.globalCompositeOperation = 'destination-out';
+      // (destination-out 會連底色一起擦掉，所以改在標線區域另畫柏油色斑點)
+      ctx.globalCompositeOperation = 'source-over';
+      for (let i = 0; i < 2600; i++) {
+        const xs = [42, 980, 500, 524][Math.floor(rnd() * 4)] + (rnd() - 0.5) * 10, y = rnd() * S, v = 52 + Math.floor(rnd() * 30);
+        ctx.fillStyle = `rgba(${v},${v + 2},${v + 6},${0.5 + rnd() * 0.5})`; ctx.fillRect(xs, y, 1 + rnd() * 4, 1 + rnd() * 7);
       }
 
-      // 兩側路緣白線
-      ctx.fillStyle = '#f8fafc';
-      ctx.fillRect(18, 0, 8, 512);
-      ctx.fillRect(486, 0, 8, 512);
-
-      // 全線中央連續雙黃實線
-      ctx.fillStyle = '#f59e0b';
-      ctx.fillRect(247, 0, 6, 512);
-      ctx.fillRect(259, 0, 6, 512);
-
       const tex = new THREE.CanvasTexture(c);
-      tex.wrapS = THREE.RepeatWrapping;
-      tex.wrapT = THREE.RepeatWrapping;
-      tex.anisotropy = 8;
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.anisotropy = 8;
+      const bump = new THREE.CanvasTexture(bc);
+      bump.wrapS = bump.wrapT = THREE.RepeatWrapping; bump.anisotropy = 8;
+      tex.bumpTex = bump;
       return tex;
     }
 
@@ -958,8 +1154,11 @@
       roadGeo.setIndex(roadIndices);
       roadGeo.computeVertexNormals();
 
+      const asphaltTex = createAsphaltTexture();
       const roadMat = new THREE.MeshStandardMaterial({
-        map: createAsphaltTexture(),
+        map: asphaltTex,
+        bumpMap: asphaltTex.bumpTex,
+        bumpScale: 1.4,
         roughness: 0.85,
         metalness: 0.06,
         side: THREE.DoubleSide
@@ -980,84 +1179,166 @@
       const baseMesh = new THREE.Mesh(baseGeo, baseMat);
       scene.add(baseMesh);
 
-      // 建立護欄：急彎處僅移除「內側」護欄，保留「外側」懸崖護欄
-      const railMat = new THREE.MeshStandardMaterial({
-        color: 0xe2e8f0,
-        metalness: 0.35,
-        roughness: 0.45,
-        side: THREE.DoubleSide
-      });
-      const postMat = new THREE.MeshStandardMaterial({
-        color: 0x64748b,
-        metalness: 0.5,
-        roughness: 0.5
-      });
+      // 護欄改在地形建好後由 buildGuardrails() 建立（需要地形網格高度判斷上坡開挖側）
+    }
+
+    buildRoadAndGuardrails();
+
+    // =========================================================================
+    // 4b. W 型鋼板護欄：鍍鋅 W 型鋼板 + C 型鋼立柱（每 4 m）+ 間隔塊 + 端部外撇魚尾板 + 反光片
+    //     不設護欄：急彎內側、貼近另一段路處、上坡開挖側（邊坡高於路面，實際上是排水溝與邊坡）
+    // =========================================================================
+    let terrainMeshHeightAt = null; // 由 buildTerrainAndCreek() 設定：地形網格實際表面高度
+    function buildGuardrails() {
+      const RAIL_OFF = ROAD_HALF_WIDTH + 0.25;  // 鋼板迎車面離路中心距離
+      const POST_SPACING = 4.0;
+      const MIN_RUN = 8;                        // 少於 8 個取樣點（約 25 m）的零碎段落不設
+      // W 型斷面（[往外偏移, 離路面高度]，由下而上）：兩道凸稜朝車道、中間凹槽，高 31 cm、深 8 cm
+      const PROFILE = [
+        [0.075, 0.445], [0.035, 0.462], [0.000, 0.505], [0.012, 0.548], [0.060, 0.585],
+        [0.075, 0.600], [0.060, 0.615], [0.012, 0.652], [0.000, 0.695], [0.035, 0.738], [0.075, 0.755]
+      ];
+      const beamMat = new THREE.MeshStandardMaterial({ color: 0xc3c9cf, metalness: 0.45, roughness: 0.38, side: THREE.DoubleSide });
+      const steelMat = new THREE.MeshStandardMaterial({ color: 0x9aa1a8, metalness: 0.4, roughness: 0.5 });
+
+      // C 型鋼立柱斷面（開口朝外），沿 Y 擠出
+      const cShape = new THREE.Shape();
+      const cw = 0.10, cd = 0.075, ct = 0.012;
+      cShape.moveTo(-cw / 2, 0); cShape.lineTo(cw / 2, 0); cShape.lineTo(cw / 2, cd); cShape.lineTo(cw / 2 - ct, cd);
+      cShape.lineTo(cw / 2 - ct, ct); cShape.lineTo(-cw / 2 + ct, ct); cShape.lineTo(-cw / 2 + ct, cd); cShape.lineTo(-cw / 2, cd);
+      cShape.closePath();
+      const POST_H = 1.45; // 埋入 0.7 m，露出到鋼板頂下緣
+      const postGeo = new THREE.ExtrudeGeometry(cShape, { depth: POST_H, bevelEnabled: false });
+      postGeo.rotateX(-Math.PI / 2);          // 擠出方向改為 +Y
+      postGeo.rotateY(Math.PI);               // 腹板在 z=0 貼著間隔塊，翼板往外（+Z）
+      postGeo.translate(0, -0.7, 0);
+      const blockGeo = new THREE.BoxGeometry(0.15, 0.34, 0.075); // 間隔塊（x 為往外方向）
+      const reflGeo = new THREE.PlaneGeometry(0.09, 0.06);
+
+      const postMats = [], blockMats = [], reflMats = [];
+      const o3 = new THREE.Object3D();
 
       [-1, 1].forEach(side => {
-        let segPositions = [];
-        let segIndices = [];
-        const flushSegment = () => {
-          if (segPositions.length >= 12) {
-            const g = new THREE.BufferGeometry();
-            g.setAttribute('position', new THREE.Float32BufferAttribute(segPositions, 3));
-            g.setIndex(segIndices);
-            g.computeVertexNormals();
-            const m = new THREE.Mesh(g, railMat);
-            m.castShadow = true;
-            m.receiveShadow = true;
-            scene.add(m);
-          }
-          segPositions = [];
-          segIndices = [];
-        };
-
+        // 1) 逐點判斷是否設護欄
+        const keep = new Array(NUM_SAMPLES + 1).fill(false);
         for (let i = 0; i <= NUM_SAMPLES; i++) {
           const s = roadSamples[i];
           const prevT = roadSamples[Math.max(0, i - 4)].flatTangent;
           const nextT = roadSamples[Math.min(NUM_SAMPLES, i + 4)].flatTangent;
           const crossY = prevT.x * nextT.z - prevT.z * nextT.x;
-          const isInnerHairpin = (s.curvature > 0.38) && ((crossY > 0 && side === 1) || (crossY < 0 && side === -1));
+          if ((s.curvature > 0.38) && ((crossY > 0 && side === 1) || (crossY < 0 && side === -1))) continue;
 
-          const railPt = s.pos.clone().addScaledVector(s.right, side * (ROAD_HALF_WIDTH + 0.15));
-
-          let encroachesOtherRoad = false;
+          const rx = s.pos.x + s.right.x * side * RAIL_OFF, rz = s.pos.z + s.right.z * side * RAIL_OFF;
+          let encroaches = false;
           for (let j = 0; j <= NUM_SAMPLES; j += 4) {
             if (Math.abs(i - j) < 35) continue;
             const other = roadSamples[j].pos;
-            if (Math.abs(other.y - railPt.y) < 5.5) {
-              const dist = Math.hypot(other.x - railPt.x, other.z - railPt.z);
-              if (dist < ROAD_HALF_WIDTH + 1.2) {
-                encroachesOtherRoad = true;
-                break;
-              }
-            }
+            if (Math.abs(other.y - s.pos.y) < 5.5 && Math.hypot(other.x - rx, other.z - rz) < ROAD_HALF_WIDTH + 1.2) { encroaches = true; break; }
           }
+          if (encroaches) continue;
 
-          if (isInnerHairpin || encroachesOtherRoad) {
-            flushSegment();
-            continue;
+          // 上坡開挖側：路緣外的地形網格明顯高於路面 → 那裡是邊坡，不放護欄（否則會被邊坡吃掉）
+          if (terrainMeshHeightAt) {
+            const gx = s.pos.x + s.right.x * side * (ROAD_HALF_WIDTH + 0.6);
+            const gz = s.pos.z + s.right.z * side * (ROAD_HALF_WIDTH + 0.6);
+            if (terrainMeshHeightAt(gx, gz) > s.pos.y + 0.45) continue;
           }
+          keep[i] = true;
+        }
 
-          const baseIdx = segPositions.length / 3;
-          segPositions.push(railPt.x, railPt.y + 0.42, railPt.z);
-          segPositions.push(railPt.x, railPt.y + 0.78, railPt.z);
+        // 2) 切成連續段落，各段建一條 W 型鋼板
+        let i = 0;
+        while (i <= NUM_SAMPLES) {
+          if (!keep[i]) { i++; continue; }
+          let j = i;
+          while (j + 1 <= NUM_SAMPLES && keep[j + 1]) j++;
+          if (j - i + 1 >= MIN_RUN) buildRun(side, i, j);
+          i = j + 1;
+        }
+      });
 
-          if (baseIdx >= 2) {
-            segIndices.push(baseIdx - 2, baseIdx - 1, baseIdx);
-            segIndices.push(baseIdx - 1, baseIdx + 1, baseIdx);
+      function buildRun(side, i0, i1) {
+        // 沿線累積距離（端部外撇與立柱間距用）
+        const dist = [0];
+        for (let i = i0 + 1; i <= i1; i++) {
+          const a = roadSamples[i - 1].pos, b = roadSamples[i].pos;
+          dist.push(dist[dist.length - 1] + Math.hypot(b.x - a.x, b.z - a.z));
+        }
+        const total = dist[dist.length - 1];
+        const FLARE_LEN = 2.6, FLARE_OUT = 0.45;
+        const flareAt = d => {
+          const e = Math.min(d, total - d);
+          if (e >= FLARE_LEN) return 0;
+          const t = 1 - e / FLARE_LEN;
+          return FLARE_OUT * t * t;
+        };
+
+        const pos = [], idx = [], NP = PROFILE.length;
+        for (let k = 0; k <= i1 - i0; k++) {
+          const s = roadSamples[i0 + k];
+          const out = RAIL_OFF + flareAt(dist[k]);
+          for (let p = 0; p < NP; p++) {
+            const [o, h] = PROFILE[p];
+            pos.push(s.pos.x + s.right.x * side * (out + o), s.pos.y + h, s.pos.z + s.right.z * side * (out + o));
           }
-
-          if (i % 5 === 0) {
-            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.82, 6), postMat);
-            post.position.set(railPt.x, railPt.y + 0.38, railPt.z);
-            scene.add(post);
+          if (k > 0) {
+            const a = (k - 1) * NP, b = k * NP;
+            for (let p = 0; p < NP - 1; p++) idx.push(a + p, b + p, a + p + 1, a + p + 1, b + p, b + p + 1);
           }
         }
-        flushSegment();
-      });
-    }
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        g.setIndex(idx);
+        g.computeVertexNormals();
+        const beam = new THREE.Mesh(g, beamMat);
+        beam.castShadow = true;
+        beam.receiveShadow = true;
+        scene.add(beam);
 
-    buildRoadAndGuardrails();
+        // 立柱、間隔塊、反光片：沿線每 POST_SPACING 公尺一組（端部外撇段只放立柱）
+        let k = 0, postNo = 0;
+        for (let d = 0.4; d <= total - 0.4; d += POST_SPACING) {
+          while (k < dist.length - 2 && dist[k + 1] < d) k++;
+          const t = (d - dist[k]) / Math.max(1e-6, dist[k + 1] - dist[k]);
+          const a = roadSamples[i0 + k], b = roadSamples[i0 + Math.min(k + 1, i1 - i0)];
+          const px = a.pos.x + (b.pos.x - a.pos.x) * t, py = a.pos.y + (b.pos.y - a.pos.y) * t, pz = a.pos.z + (b.pos.z - a.pos.z) * t;
+          const rx = a.right.x * side, rz = a.right.z * side;   // 往外單位向量
+          const yaw = Math.atan2(rx, rz);                       // 讓物件本地 +Z 指向路外
+          const out = RAIL_OFF + flareAt(d);
+
+          // 立柱（C 型鋼，開口朝外）：在鋼板與間隔塊後方
+          o3.position.set(px + rx * (out + 0.075 + 0.15), py, pz + rz * (out + 0.075 + 0.15));
+          o3.rotation.set(0, yaw, 0); o3.scale.set(1, 1, 1); o3.updateMatrix();
+          postMats.push(o3.matrix.clone());
+
+          if (flareAt(d) < 0.02) {
+            // 間隔塊：鋼板背面到立柱之間
+            o3.position.set(px + rx * (out + 0.075 + 0.075), py + 0.6, pz + rz * (out + 0.075 + 0.075));
+            o3.rotation.set(0, yaw + Math.PI / 2, 0); o3.updateMatrix();
+            blockMats.push(o3.matrix.clone());
+            // 反光片：每兩根立柱一片，貼在凹槽上、面向車道
+            if (postNo % 2 === 0) {
+              o3.position.set(px + rx * (out + 0.068), py + 0.6, pz + rz * (out + 0.068));
+              o3.rotation.set(0, yaw + Math.PI, 0); o3.updateMatrix();
+              reflMats.push(o3.matrix.clone());
+            }
+          }
+          postNo++;
+        }
+      }
+
+      const addInst = (geo, mat, mats, shadow) => {
+        const inst = new THREE.InstancedMesh(geo, mat, Math.max(1, mats.length));
+        mats.forEach((m, k) => inst.setMatrixAt(k, m));
+        inst.count = mats.length;
+        inst.castShadow = shadow;
+        inst.receiveShadow = true;
+        scene.add(inst);
+      };
+      addInst(postGeo, steelMat, postMats, true);
+      addInst(blockGeo, steelMat, blockMats, false);
+      addInst(reflGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color(1.9, 1.35, 0.25), side: THREE.DoubleSide }), reflMats, false);
+    }
 
     // =========================================================================
     // 5. 全區 3D 山脈與溪谷地形（依據山影灰階圖自然化高低分布，保留原有顏色與植被）
@@ -1150,7 +1431,47 @@
       .addScaledVector(s36EntryRef.flatTangent, -2.0)
       .addScaledVector(s36EntryRef.right, s36OuterSide * 38.0);
 
+    // 第 36 彎彎心舌狀草坡島真實地形脊椎線（用於直接雕塑 3D 地表取代獨立綠色模型）
+    const s36InnerSide = -s36OuterSide;
+    const s36IslandRefPre = roadSamples[Math.min(NUM_SAMPLES - 6, idx36Ref + 2)];
+    const s36IslandEntryPre = roadSamples[Math.max(0, idx36Ref - 5)];
+    const s36IslandExitPre = roadSamples[Math.min(NUM_SAMPLES, idx36Ref + 9)];
+    const s36InnerBisectorPre = new THREE.Vector3()
+      .addVectors(
+        s36IslandEntryPre.right.clone().multiplyScalar(s36InnerSide),
+        s36IslandExitPre.right.clone().multiplyScalar(s36InnerSide)
+      )
+      .normalize();
+    const b36IslandOrigin = s36IslandRefPre.pos.clone().addScaledVector(s36IslandRefPre.flatTangent, 1.35);
+    const b36IslandTip = b36IslandOrigin.clone().addScaledVector(s36InnerBisectorPre, ROAD_HALF_WIDTH + 1.8);
+    const b36IslandTail = b36IslandOrigin.clone().addScaledVector(s36InnerBisectorPre, ROAD_HALF_WIDTH + 9.2);
+
+    // 道路路肩攤平半徑與往外漸變到原始地形的距離
+    const ROAD_FLAT_RADIUS = ROAD_HALF_WIDTH + 0.9;
+    const ROAD_BLEND_DIST = 16.0;
     function getTerrainHeightAt(x, z) {
+      if (DEM) {
+        const demY = sampleDEM(x, z) - BASE_ELEV;
+        const gx0 = Math.floor(x / GRID_CELL), gz0 = Math.floor(z / GRID_CELL);
+        let best = Infinity, roadY = 0;
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            const bucket = roadSpatialGrid.get(`${gx0 + dx},${gz0 + dz}`);
+            if (!bucket) continue;
+            for (let k = 0; k < bucket.length; k++) {
+              const rp = bucket[k];
+              const d2 = (x - rp.x) * (x - rp.x) + (z - rp.z) * (z - rp.z);
+              if (d2 < best) { best = d2; roadY = rp.y; }
+            }
+          }
+        }
+        const d = Math.sqrt(best);
+        if (d >= ROAD_FLAT_RADIUS + ROAD_BLEND_DIST) return demY;
+        const shoulderY = roadY - 0.3;  // 略低於路面，避免穿模
+        if (d <= ROAD_FLAT_RADIUS) return shoulderY;
+        const t = THREE.MathUtils.smoothstep(d, ROAD_FLAT_RADIUS, ROAD_FLAT_RADIUS + ROAD_BLEND_DIST);
+        return THREE.MathUtils.lerp(shoulderY, demY, t);
+      }
       const gx = Math.floor(x / GRID_CELL);
       const gz = Math.floor(z / GRID_CELL);
 
@@ -1169,9 +1490,9 @@
             const dist = Math.sqrt(distSq);
             if (dist < nearestRoadDist) nearestRoadDist = dist;
 
-            // 路面安全包絡：確保 3D 山坡絕不穿進柏油路面
+            // 路面安全包絡：確保 3D 山坡絕不穿進柏油路面（路肩 6.05m 外允許彎心草坡自然隆起）
             if (dist < 14.5) {
-              const trench = dist < 6.4 ? 0.55 : 0.55 + (dist - 6.4) * 0.22;
+              const trench = dist < 6.05 ? 0.45 : 0.45 + (dist - 6.05) * 0.22;
               minRoadClearanceY = Math.min(minRoadClearanceY, rp.y - trench);
             }
 
@@ -1257,31 +1578,37 @@
         finalH -= gorgeDepth;
       }
 
-      // 右側對岸山頭隆起，讓雲梯東端引道自然銜接進山坡稜線
-      const dRightPeak = Math.hypot(x - (taipingRightAnchor.x + 12.0), z - (taipingRightAnchor.z + 8.0));
-      if (dRightPeak < 120.0) {
-        const rightPeakFactor = 1.0 - THREE.MathUtils.smoothstep(dRightPeak, 16.0, 120.0);
-        const targetRightY = taipingRightAnchor.y + 4.5 + Math.cos(x * 0.035 - z * 0.03) * 2.8;
-        finalH = THREE.MathUtils.lerp(finalH, Math.max(finalH, targetRightY), rightPeakFactor * 0.92);
-      }
+      // 第 36 彎彎心內側真實地表草坡塑形（使轉彎內側地形高度緊貼路面並隨上下坡自然銜接）
+      const dBend36Apex = Math.hypot(x - s36ApexSample.pos.x, z - s36ApexSample.pos.z);
+      if (dBend36Apex < 26.0) {
+        // 找出距離該點最近的第 36 彎局部路段（涵蓋入彎、彎心至出彎），取得對應路面高度
+        let localRoadY = s36ApexSample.pos.y;
+        let localRoadDist = Infinity;
+        let localInnerDot = 0;
+        for (let k = Math.max(0, idx36Ref - 14); k <= Math.min(NUM_SAMPLES, idx36Ref + 16); k++) {
+          const rs = roadSamples[k];
+          const d = Math.hypot(x - rs.pos.x, z - rs.pos.z);
+          if (d < localRoadDist) {
+            localRoadDist = d;
+            localRoadY = rs.pos.y;
+            const innerDir = rs.right.clone().multiplyScalar(s36InnerSide);
+            localInnerDot = (x - rs.pos.x) * innerDir.x + (z - rs.pos.z) * innerDir.z;
+          }
+        }
 
-      // 第 36 彎（雲海大飯店）山脊高台：直接托住實測座標上的雲海大飯店主樓與長棟
-      const rDx = yunhaiWingEndPos.x - yunhaiFrontPos.x;
-      const rDz = yunhaiWingEndPos.z - yunhaiFrontPos.z;
-      const rLenSq = rDx * rDx + rDz * rDz || 1;
-      const rT = THREE.MathUtils.clamp(((x - yunhaiFrontPos.x) * rDx + (z - yunhaiFrontPos.z) * rDz) / rLenSq, 0, 1);
-      const closestRidgeX = yunhaiFrontPos.x + rDx * rT;
-      const closestRidgeZ = yunhaiFrontPos.z + rDz * rT;
-      const distToRidge = Math.hypot(x - closestRidgeX, z - closestRidgeZ);
-      if (distToRidge < 46.0) {
-        const ridgeFactor = 1.0 - THREE.MathUtils.smoothstep(distToRidge, 13.0, 46.0);
-        const targetHotelGroundY = yunhaiRidgeMidY + Math.sin(x * 0.04) * 0.6;
-        finalH = THREE.MathUtils.lerp(finalH, Math.max(finalH, targetHotelGroundY), ridgeFactor * 0.94);
-      }
-      const dYunhaiDrop = Math.hypot(x - yunhaiDropCenter.x, z - yunhaiDropCenter.z);
-      if (dYunhaiDrop < 65.0) {
-        const dropFactor = 1.0 - THREE.MathUtils.smoothstep(dYunhaiDrop, 10.0, 65.0);
-        finalH -= 26.0 * dropFactor;
+        // 只要位於轉彎內側（localInnerDot > 0），將地表拉齊至與路面幾乎同高（路緣 -0.05m，中央草坡微隆 +0.35m）
+        if (localInnerDot > -1.0 && localRoadDist < 16.5) {
+          const innerMask = THREE.MathUtils.smoothstep(localInnerDot, -1.0, 2.2);
+          const distMask = 1.0 - THREE.MathUtils.smoothstep(localRoadDist, 8.5, 16.5);
+          const crownBoost = THREE.MathUtils.smoothstep(localRoadDist, 5.5, 8.2) * 0.38;
+          const flushGroundY = localRoadY - 0.05 + crownBoost;
+          finalH = THREE.MathUtils.lerp(finalH, flushGroundY, innerMask * distMask);
+
+          // 放寬第 36 彎內側路肩的路面下緣限制，避免低側入彎路段把內側草坡拉陷
+          if (localRoadDist > 5.45) {
+            minRoadClearanceY = Math.max(minRoadClearanceY, flushGroundY);
+          }
+        }
       }
 
       // 強制套用路面下緣包絡，杜絕任何地形三角形穿進柏油路面
@@ -1293,9 +1620,22 @@
     }
 
     function buildTerrainAndCreek() {
-      const minX = -1550, maxX = 1850;
-      const minZ = -1050, maxZ = 1050;
-      const segX = 310, segZ = 195;
+      let minX = -1550, maxX = 1850;
+      let minZ = -1050, maxZ = 1050;
+      let segX = 310, segZ = 195;
+      if (DEM) {
+        const m = DEM.meta;
+        // DEM 範圍換成世界座標（網格與 DEM 像素一一對齊；超過 1000 格就等距抽稀）
+        minX = m.xmin - WORLD_ORIGIN_TM.E;
+        maxX = m.xmin + (m.cols - 1) * m.step - WORLD_ORIGIN_TM.E;
+        maxZ = -(m.ymax - (m.rows - 1) * m.step - WORLD_ORIGIN_TM.N);
+        minZ = -(m.ymax - WORLD_ORIGIN_TM.N);
+        const stride = Math.max(1, Math.ceil(Math.max(m.cols, m.rows) / 1000));
+        segX = Math.floor((m.cols - 1) / stride);
+        segZ = Math.floor((m.rows - 1) / stride);
+        maxX = minX + segX * stride * m.step;
+        maxZ = minZ + segZ * stride * m.step;
+      }
       const width = maxX - minX;
       const depth = maxZ - minZ;
 
@@ -1311,37 +1651,188 @@
       const colRock = new THREE.Color(0x57534e);
       const tmpColor = new THREE.Color();
 
-      for (let i = 0; i < posAttr.count; i++) {
-        const vx = posAttr.getX(i);
-        const vz = posAttr.getZ(i);
-        const vy = getTerrainHeightAt(vx, vz);
-        posAttr.setY(i, vy);
+      function applyTerrainVertexHeightsAndColors(targetGeo, yOffset = 0) {
+        const pAttr = targetGeo.attributes.position;
+        const vColors = new Float32Array(pAttr.count * 3);
+        for (let i = 0; i < pAttr.count; i++) {
+          const vx = pAttr.getX(i);
+          const vz = pAttr.getZ(i);
+          const vy = getTerrainHeightAt(vx, vz) + yOffset;
+          pAttr.setY(i, vy);
 
-        const realElev = vy + BASE_ELEV;
-        if (realElev < 460) {
-          tmpColor.copy(colLowForest).lerp(colMidTea, (realElev - 300) / 160);
-        } else if (realElev < 760) {
-          tmpColor.copy(colMidTea).lerp(colHighRidge, (realElev - 460) / 300);
-        } else {
-          tmpColor.copy(colHighRidge).lerp(colRock, THREE.MathUtils.clamp((realElev - 760) / 220, 0, 0.55));
+          const realElev = vy + BASE_ELEV;
+          if (realElev < 460) {
+            tmpColor.copy(colLowForest).lerp(colMidTea, (realElev - 300) / 160);
+          } else if (realElev < 760) {
+            tmpColor.copy(colMidTea).lerp(colHighRidge, (realElev - 460) / 300);
+          } else {
+            tmpColor.copy(colHighRidge).lerp(colRock, THREE.MathUtils.clamp((realElev - 760) / 220, 0, 0.55));
+          }
+          const variation = 0.92 + 0.14 * Math.sin(vx * 0.045) * Math.cos(vz * 0.045);
+          vColors[i * 3] = tmpColor.r * variation;
+          vColors[i * 3 + 1] = tmpColor.g * variation;
+          vColors[i * 3 + 2] = tmpColor.b * variation;
         }
-        const variation = 0.92 + 0.14 * Math.sin(vx * 0.045) * Math.cos(vz * 0.045);
-        colors[i * 3] = tmpColor.r * variation;
-        colors[i * 3 + 1] = tmpColor.g * variation;
-        colors[i * 3 + 2] = tmpColor.b * variation;
+        targetGeo.setAttribute('color', new THREE.BufferAttribute(vColors, 3));
+        targetGeo.computeVertexNormals();
       }
 
-      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-      geo.computeVertexNormals();
+      applyTerrainVertexHeightsAndColors(geo, 0);
+
+      // ---- 道路裁切遮罩 ----
+      // 地形網格約 20 m 一格，路寬只有 ~11 m：路旁頂點雖已攤平，但三角面拉到上坡頂點時
+      // 會斜切過路面而凸出來。這張貼圖（1 m 解析度）記錄每點到路中心線的水平距離與該處路面高度，
+      // 地形片段若落在路面範圍內且高於路面就捨棄，保留真實山坡、又讓路面永遠露出。
+      const roadCut = (() => {
+        const RES = 1.0, REACH = ROAD_HALF_WIDTH + 4;
+        let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+        for (const s of roadSamples) {
+          x0 = Math.min(x0, s.pos.x); x1 = Math.max(x1, s.pos.x);
+          z0 = Math.min(z0, s.pos.z); z1 = Math.max(z1, s.pos.z);
+        }
+        x0 -= REACH + 2; z0 -= REACH + 2; x1 += REACH + 2; z1 += REACH + 2;
+        const W = Math.ceil((x1 - x0) / RES) + 1, H = Math.ceil((z1 - z0) / RES) + 1;
+        const dist = new Float32Array(W * H).fill(1e9);
+        const ry = new Float32Array(W * H);
+        for (let i = 0; i < NUM_SAMPLES; i++) {
+          const a = roadSamples[i].pos, b = roadSamples[i + 1].pos;
+          const abx = b.x - a.x, abz = b.z - a.z, len2 = abx * abx + abz * abz || 1e-9;
+          const c0 = Math.max(0, Math.floor((Math.min(a.x, b.x) - REACH - x0) / RES));
+          const c1 = Math.min(W - 1, Math.ceil((Math.max(a.x, b.x) + REACH - x0) / RES));
+          const r0 = Math.max(0, Math.floor((Math.min(a.z, b.z) - REACH - z0) / RES));
+          const r1 = Math.min(H - 1, Math.ceil((Math.max(a.z, b.z) + REACH - z0) / RES));
+          for (let r = r0; r <= r1; r++) {
+            const pz = z0 + r * RES;
+            for (let c = c0; c <= c1; c++) {
+              const px = x0 + c * RES;
+              const t = Math.min(1, Math.max(0, ((px - a.x) * abx + (pz - a.z) * abz) / len2));
+              const dx = px - (a.x + abx * t), dz = pz - (a.z + abz * t);
+              const d = Math.sqrt(dx * dx + dz * dz);
+              const k = r * W + c;
+              if (d < dist[k]) { dist[k] = d; ry[k] = a.y + (b.y - a.y) * t; }
+            }
+          }
+        }
+        // 打包成 RGBA8：R = 距離（4 cm/階，上限 10.2 m）；G,B = 路面高度 16 bit（2 cm/階）
+        const data = new Uint8Array(W * H * 4);
+        for (let k = 0; k < W * H; k++) {
+          data[k * 4] = Math.min(255, Math.round(dist[k] * 25));
+          const yq = Math.min(65535, Math.max(0, Math.round((ry[k] + 100) * 50)));
+          data[k * 4 + 1] = yq >> 8;
+          data[k * 4 + 2] = yq & 255;
+          data[k * 4 + 3] = 255;
+        }
+        const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat);
+        tex.magFilter = tex.minFilter = THREE.NearestFilter;
+        tex.generateMipmaps = false;
+        tex.needsUpdate = true;
+        return {
+          uRoadCut: { value: tex },
+          uRoadCutMin: { value: new THREE.Vector2(x0, z0) },
+          uRoadCutSize: { value: new THREE.Vector2(W, H) },
+          uRoadCutRes: { value: RES },
+          uRoadCutHalfW: { value: ROAD_HALF_WIDTH + 0.05 }
+        };
+      })();
 
       const terrainMat = new THREE.MeshStandardMaterial({
         vertexColors: true,
         roughness: 0.92,
         metalness: 0.02
       });
+      terrainMat.onBeforeCompile = (sh) => {
+        Object.assign(sh.uniforms, roadCut);
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>', 'varying vec3 vRoadCutWP;\n#include <common>')
+          .replace('#include <project_vertex>', '#include <project_vertex>\nvRoadCutWP = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+        sh.fragmentShader = sh.fragmentShader
+          .replace('#include <common>', `#include <common>
+            varying vec3 vRoadCutWP;
+            uniform sampler2D uRoadCut;
+            uniform vec2 uRoadCutMin, uRoadCutSize;
+            uniform float uRoadCutRes, uRoadCutHalfW;
+            vec2 roadCutFetch(vec2 cr) {
+              vec4 t = floor(texture2D(uRoadCut, (cr + 0.5) / uRoadCutSize) * 255.0 + 0.5);
+              return vec2(t.r / 25.0, (t.g * 256.0 + t.b) / 50.0 - 100.0);
+            }`)
+          .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+            {
+              vec2 p = (vRoadCutWP.xz - uRoadCutMin) / uRoadCutRes;
+              if (p.x >= 0.0 && p.y >= 0.0 && p.x < uRoadCutSize.x - 1.0 && p.y < uRoadCutSize.y - 1.0) {
+                vec2 i0 = floor(p), f = p - i0;
+                vec2 a = roadCutFetch(i0), b = roadCutFetch(i0 + vec2(1.0, 0.0));
+                vec2 c = roadCutFetch(i0 + vec2(0.0, 1.0)), d = roadCutFetch(i0 + vec2(1.0, 1.0));
+                vec2 rc = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+                if (rc.x < uRoadCutHalfW && vRoadCutWP.y > rc.y - 0.12) discard;
+              }
+            }`);
+      };
       const terrainMesh = new THREE.Mesh(geo, terrainMat);
       terrainMesh.receiveShadow = true;
       scene.add(terrainMesh);
+
+      // ---- 路緣邊坡切面 ----
+      // 路面範圍內的地形被裁掉後，路緣外側的坡面可能仍高於路面，從路上看會露出懸空的坡體邊緣。
+      // 沿兩側路緣立一道切面牆，從路面一路接到該處地形網格的實際高度，封住缺口。
+      (() => {
+        const P = geo.attributes.position.array;
+        const sx = geo.parameters.widthSegments, sz = geo.parameters.heightSegments, W1 = sx + 1;
+        const X0 = P[0], DX = P[3] - P[0], Z0 = P[2], DZ = P[W1 * 3 + 2] - P[2];
+        const vx = i => P[i * 3], vy = i => P[i * 3 + 1], vz = i => P[i * 3 + 2];
+        function tri(px, pz, i0, i1, i2) {
+          const x1 = vx(i0), z1 = vz(i0), x2 = vx(i1), z2 = vz(i1), x3 = vx(i2), z3 = vz(i2);
+          const den = (z2 - z3) * (x1 - x3) + (x3 - x2) * (z1 - z3);
+          const l1 = ((z2 - z3) * (px - x3) + (x3 - x2) * (pz - z3)) / den;
+          const l2 = ((z3 - z1) * (px - x3) + (x1 - x3) * (pz - z3)) / den;
+          const l3 = 1 - l1 - l2;
+          if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) return null;
+          return l1 * vy(i0) + l2 * vy(i1) + l3 * vy(i2);
+        }
+        // 與 PlaneGeometry 三角化方式一致的網格表面高度
+        function meshHeightAt(px, pz) {
+          const ix = Math.floor((px - X0) / DX), iy = Math.floor((pz - Z0) / DZ);
+          if (ix < 0 || iy < 0 || ix >= sx || iy >= sz) return -Infinity;
+          const a = ix + W1 * iy, b = ix + W1 * (iy + 1), c = ix + 1 + W1 * (iy + 1), d = ix + 1 + W1 * iy;
+          const h = tri(px, pz, a, b, d);
+          return h !== null ? h : (tri(px, pz, b, c, d) ?? -Infinity);
+        }
+        terrainMeshHeightAt = meshHeightAt;
+        const pos = [], idx = [];
+        const EDGE = ROAD_HALF_WIDTH + 0.02;
+        [-1, 1].forEach(side => {
+          const base = pos.length / 3;
+          for (let i = 0; i <= NUM_SAMPLES; i++) {
+            const s = roadSamples[i];
+            const ex = s.pos.x + s.right.x * side * EDGE, ez = s.pos.z + s.right.z * side * EDGE;
+            const bottom = s.pos.y - 0.3;
+            const top = Math.max(bottom, meshHeightAt(ex, ez) + 0.05);
+            pos.push(ex, bottom, ez, ex, top, ez);
+            if (i < NUM_SAMPLES) {
+              const v = base + i * 2;
+              idx.push(v, v + 2, v + 1, v + 1, v + 2, v + 3);
+            }
+          }
+        });
+        const wallGeo = new THREE.BufferGeometry();
+        wallGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        wallGeo.setIndex(idx);
+        wallGeo.computeVertexNormals();
+        const wall = new THREE.Mesh(wallGeo, new THREE.MeshStandardMaterial({
+          color: 0x6b5d4f, roughness: 0.96, metalness: 0.0, side: THREE.DoubleSide
+        }));
+        wall.receiveShadow = true;
+        scene.add(wall);
+      })();
+
+      // 第 36 彎轉彎內側高密度細分地形補塊（0.7m 解析度，消除大網格間距造成的路面邊緣落差）
+      const patchCenter = s36ApexSample.pos.clone().addScaledVector(s36InnerBisectorPre, 7.5);
+      const patchGeo = new THREE.PlaneGeometry(34, 34, 48, 48);
+      patchGeo.rotateX(-Math.PI / 2);
+      patchGeo.translate(patchCenter.x, 0, patchCenter.z);
+      applyTerrainVertexHeightsAndColors(patchGeo, -0.02);
+      const patchMesh = new THREE.Mesh(patchGeo, terrainMat);
+      patchMesh.receiveShadow = true;
+      scene.add(patchMesh);
 
       // 九芎坑溪溪水帶
       const creekGeoPts = [];
@@ -1367,69 +1858,121 @@
         roughness: 0.25,
         metalness: 0.35
       });
-      scene.add(new THREE.Mesh(creekGeo, creekMat));
+      if (!DEM) scene.add(new THREE.Mesh(creekGeo, creekMat)); // 溪水帶位置是估計值，接上真實 DEM 後先不顯示
 
-      // 程序化梅山山林樹群與高海拔茶園灌木（InstancedMesh 高效批次繪製）
-      const treeCount = 1350;
-      const trunkGeo = new THREE.CylinderGeometry(0.22, 0.36, 3.4, 5);
-      const crownGeo = new THREE.ConeGeometry(2.3, 6.2, 6);
-      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x451a03, roughness: 0.9 });
-      const crownMat = new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.85 });
-
-      const trunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, treeCount);
-      const crownInst = new THREE.InstancedMesh(crownGeo, crownMat, treeCount);
+      // 程序化梅山植被：十字交叉面片（透空貼圖）× 四種樹種 × 風吹搖擺，固定種子
+      const vrnd = mulberry32(36);
+      function makeFoliageTex(kind) {
+        const W = 128, H = 256, c = document.createElement('canvas'); c.width = W; c.height = H;
+        const g = c.getContext('2d'), r = mulberry32(kind.length * 977 + 5);
+        const blob = (x, y, rad, hsl) => { g.fillStyle = hsl; g.beginPath(); g.ellipse(x, y, rad, rad * 0.82, r() * 3, 0, 6.283); g.fill(); };
+        if (kind === 'broad') {
+          g.fillStyle = '#4a3320'; g.fillRect(W / 2 - 4, H * 0.5, 8, H * 0.5);
+          for (let i = 0; i < 90; i++) blob(W / 2 + (r() - 0.5) * 82, H * 0.3 + (r() - 0.5) * 120, 10 + r() * 16, `hsl(${96 + r() * 28},${46 + r() * 18}%,${16 + r() * 22}%)`);
+        } else if (kind === 'bamboo') {
+          for (let s = 0; s < 6; s++) {
+            const x0 = 28 + s * 14 + r() * 6, lean = (r() - 0.5) * 26;
+            g.strokeStyle = `hsl(${78 + r() * 20},45%,${34 + r() * 12}%)`; g.lineWidth = 3;
+            g.beginPath(); g.moveTo(x0, H); g.quadraticCurveTo(x0 + lean * 0.4, H * 0.5, x0 + lean, 22); g.stroke();
+            for (let l = 0; l < 26; l++) blob(x0 + lean * (0.45 + r() * 0.55) + (r() - 0.5) * 22, 20 + r() * 110, 4 + r() * 6, `hsl(${88 + r() * 24},${50 + r() * 15}%,${24 + r() * 20}%)`);
+          }
+        } else if (kind === 'areca') {
+          g.strokeStyle = '#8a8f6a'; g.lineWidth = 6; g.beginPath(); g.moveTo(W / 2, H); g.lineTo(W / 2 + 3, 62); g.stroke();
+          g.strokeStyle = '#5c6044'; g.lineWidth = 1.5;
+          for (let y = 80; y < H; y += 12) { g.beginPath(); g.moveTo(W / 2 - 3, y); g.lineTo(W / 2 + 5, y); g.stroke(); }
+          for (let f = 0; f < 9; f++) {
+            const a = -2.9 + f * 0.36, len = 46 + r() * 14;
+            g.strokeStyle = `hsl(${100 + r() * 16},50%,${26 + r() * 10}%)`; g.lineWidth = 4;
+            g.beginPath(); g.moveTo(W / 2 + 3, 62); g.quadraticCurveTo(W / 2 + Math.cos(a) * len * 0.6, 62 + Math.sin(a) * len * 0.6 - 14, W / 2 + Math.cos(a) * len, 62 + Math.sin(a) * len + 18); g.stroke();
+          }
+        } else { // cedar 杉木
+          g.fillStyle = '#3d2a1a'; g.fillRect(W / 2 - 3, H * 0.8, 6, H * 0.2);
+          for (let t = 0; t < 7; t++) {
+            const y = 14 + t * 30, w = 16 + t * 8; g.fillStyle = `hsl(${118 + r() * 14},${36 + r() * 10}%,${14 + r() * 10}%)`;
+            g.beginPath(); g.moveTo(W / 2, y - 14); g.lineTo(W / 2 + w, y + 30); g.lineTo(W / 2 - w, y + 30); g.closePath(); g.fill();
+          }
+        }
+        const tex = new THREE.CanvasTexture(c); tex.anisotropy = 4; return tex;
+      }
+      // 十字交叉面片幾何（底部在 y=0，法線朝上讓光照柔和）
+      const crossGeo = new THREE.BufferGeometry();
+      crossGeo.setAttribute('position', new THREE.Float32BufferAttribute([-0.5,0,0, 0.5,0,0, 0.5,1,0, -0.5,1,0, 0,0,-0.5, 0,0,0.5, 0,1,0.5, 0,1,-0.5], 3));
+      crossGeo.setAttribute('uv', new THREE.Float32BufferAttribute([0,0, 1,0, 1,1, 0,1, 0,0, 1,0, 1,1, 0,1], 2));
+      crossGeo.setAttribute('normal', new THREE.Float32BufferAttribute(new Array(8).fill([0, 1, 0]).flat(), 3));
+      crossGeo.setIndex([0,1,2, 0,2,3, 4,5,6, 4,6,7]);
+      function makeFoliageMat(kind) {
+        const m = new THREE.MeshLambertMaterial({ map: makeFoliageTex(kind), alphaTest: 0.45, side: THREE.DoubleSide });
+        m.onBeforeCompile = (sh) => {
+          sh.uniforms.uWind = windU;
+          sh.vertexShader = sh.vertexShader
+            .replace('#include <common>', 'uniform float uWind;\n#include <common>')
+            .replace('#include <begin_vertex>', `#include <begin_vertex>
+              float ph = instanceMatrix[3].x * 0.05 + instanceMatrix[3].z * 0.07;
+              transformed.x += sin(uWind * 1.5 + ph) * 0.06 * position.y * position.y;
+              transformed.z += cos(uWind * 1.2 + ph) * 0.04 * position.y * position.y;`);
+        };
+        return m;
+      }
+      const SPECIES = {
+        broad:  { w: [7, 11],  h: [7, 12] },
+        bamboo: { w: [3.5, 5.5], h: [10, 16] },
+        areca:  { w: [4, 5.5], h: [9, 13] },
+        cedar:  { w: [5, 7],   h: [11, 17] }
+      };
+      const speciesMats = {}, speciesMats_list = {};
+      Object.keys(SPECIES).forEach(k => { speciesMats[k] = makeFoliageMat(k); speciesMats_list[k] = []; });
       const dummy = new THREE.Object3D();
-      const treeColor = new THREE.Color();
-      let placed = 0;
-      let attempts = 0;
+      const TREE_TARGET = 7000;
+      let placed = 0, attempts = 0;
 
-      while (placed < treeCount && attempts < treeCount * 8) {
+      while (placed < TREE_TARGET && attempts < TREE_TARGET * 8) {
         attempts++;
-        const refSample = roadSamples[Math.floor(Math.random() * NUM_SAMPLES)];
-        const sideSign = Math.random() < 0.5 ? -1 : 1;
-        const offset = 11.0 + Math.random() * 145.0;
-        const tx = refSample.pos.x + refSample.right.x * sideSign * offset + (Math.random() - 0.5) * 24;
-        const tz = refSample.pos.z + refSample.right.z * sideSign * offset + (Math.random() - 0.5) * 24;
+        const refSample = roadSamples[Math.floor(vrnd() * NUM_SAMPLES)];
+        const sideSign = vrnd() < 0.5 ? -1 : 1;
+        const offset = 9.6 + Math.pow(vrnd(), 1.7) * 150.0; // 越靠近路邊越密
+        const tx = refSample.pos.x + refSample.right.x * sideSign * offset + (vrnd() - 0.5) * 18;
+        const tz = refSample.pos.z + refSample.right.z * sideSign * offset + (vrnd() - 0.5) * 18;
 
-        // 確認樹位未落在任何路段上
-        const gx = Math.floor(tx / GRID_CELL);
-        const gz = Math.floor(tz / GRID_CELL);
+        if (DEM && !demContains(tx, tz, 2)) continue;
+        const ty = getTerrainHeightAt(tx, tz);
+        const ele = ty + BASE_ELEV, r = vrnd();
+        let kind;
+        if (ele < 550)      kind = r < 0.25 ? 'areca' : r < 0.55 ? 'bamboo' : 'broad';
+        else if (ele < 850) kind = r < 0.30 ? 'bamboo' : r < 0.65 ? 'broad' : 'cedar';
+        else                kind = r < 0.20 ? 'bamboo' : r < 0.40 ? 'broad' : 'cedar';
+        const sp = SPECIES[kind];
+        const w = sp.w[0] + vrnd() * (sp.w[1] - sp.w[0]), h = sp.h[0] + vrnd() * (sp.h[1] - sp.h[0]);
+
+        // 不讓樹冠伸進路面：樹幹到路中心線至少要「半路寬 + 路肩 + 樹冠半徑」
+        // （逐點檢查所有道路取樣點，不再隔點跳查，避免髮夾彎處漏判）
+        const clearance = ROAD_HALF_WIDTH + 1.0 + w * 0.5;
+        const gx = Math.floor(tx / GRID_CELL), gz = Math.floor(tz / GRID_CELL);
         let tooCloseToRoad = false;
         for (let dx = -1; dx <= 1 && !tooCloseToRoad; dx++) {
           for (let dz = -1; dz <= 1 && !tooCloseToRoad; dz++) {
-            const b = roadSpatialGrid.get(`${gx + dx},${gz + dz}`);
-            if (!b) continue;
-            for (let k = 0; k < b.length; k += 2) {
-              if (Math.hypot(tx - b[k].x, tz - b[k].z) < 9.2) {
-                tooCloseToRoad = true;
-                break;
-              }
+            const bkt = roadSpatialGrid.get(`${gx + dx},${gz + dz}`);
+            if (!bkt) continue;
+            for (let k = 0; k < bkt.length; k++) {
+              if (Math.hypot(tx - bkt[k].x, tz - bkt[k].z) < clearance) { tooCloseToRoad = true; break; }
             }
           }
         }
         if (tooCloseToRoad) continue;
-
-        const ty = getTerrainHeightAt(tx, tz);
-        const scale = 0.75 + Math.random() * 0.95;
-
-        dummy.position.set(tx, ty + 1.6 * scale, tz);
-        dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
-        dummy.scale.set(scale, scale, scale);
+        dummy.position.set(tx, ty - 0.2, tz);
+        dummy.rotation.set(0, vrnd() * Math.PI, 0);
+        dummy.scale.set(w, h, w);
         dummy.updateMatrix();
-        trunkInst.setMatrixAt(placed, dummy.matrix);
-
-        dummy.position.set(tx, ty + 5.4 * scale, tz);
-        crownInst.setMatrixAt(placed, dummy.matrix);
-
-        treeColor.setHSL(0.26 + Math.random() * 0.08, 0.58, 0.24 + Math.random() * 0.14);
-        crownInst.setColorAt(placed, treeColor);
+        speciesMats_list[kind].push(dummy.matrix.clone());
         placed++;
       }
-
-      trunkInst.count = placed;
-      crownInst.count = placed;
-      scene.add(trunkInst);
-      scene.add(crownInst);
+      Object.keys(SPECIES).forEach(k => {
+        const arr = speciesMats_list[k];
+        const inst = new THREE.InstancedMesh(crossGeo, speciesMats[k], Math.max(1, arr.length));
+        arr.forEach((m, idx) => inst.setMatrixAt(idx, m));
+        inst.count = arr.length;
+        inst.frustumCulled = false;
+        scene.add(inst);
+      });
 
       // 高海拔「群彎」與「平路」一帶的整齊高山烏龍茶園梯田（InstancedMesh）
       const teaRowGeo = new THREE.BoxGeometry(1.15, 0.78, 5.4);
@@ -1505,6 +2048,148 @@
     }
 
     buildTerrainAndCreek();
+    buildGuardrails();
+    // =========================================================================
+    // 5.5 路旁細節：噴漿邊坡擋土牆、U 型排水溝、紅白反光導標、電線桿與電線
+    // =========================================================================
+    function buildRoadsideDetails() {
+      const rr = mulberry32(6200);
+      const N = NUM_SAMPLES;
+      const nearOtherRoad = (x, z, idx, minD) => {
+        const gx = Math.floor(x / GRID_CELL), gz = Math.floor(z / GRID_CELL);
+        for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+          const b = roadSpatialGrid.get(`${gx + dx},${gz + dz}`); if (!b) continue;
+          for (let k = 0; k < b.length; k++) if (Math.hypot(x - b[k].x, z - b[k].z) < minD) return true;
+        }
+        return false;
+      };
+      const innerSide = (i) => {
+        const a = roadSamples[Math.max(0, i - 4)].flatTangent, b = roadSamples[Math.min(N, i + 4)].flatTangent;
+        const cy = a.x * b.z - a.z * b.x;
+        return roadSamples[i].curvature > 0.38 ? (cy > 0 ? 1 : -1) : 0;
+      };
+
+      // 判斷每個採樣點的上邊坡方向與高差（平滑處理）
+      const upSide = new Int8Array(N + 1), cutH = new Float32Array(N + 1);
+      for (let i = 0; i <= N; i++) {
+        const sm = roadSamples[i];
+        const hL = getTerrainHeightAt(sm.pos.x - sm.right.x * 13, sm.pos.z - sm.right.z * 13);
+        const hR = getTerrainHeightAt(sm.pos.x + sm.right.x * 13, sm.pos.z + sm.right.z * 13);
+        const diff = hR - hL;
+        upSide[i] = Math.abs(diff) > 1.5 ? Math.sign(diff) : 0;
+        cutH[i] = Math.max(hL, hR) - sm.pos.y;
+      }
+      const cutHs = new Float32Array(N + 1);
+      for (let i = 0; i <= N; i++) { let t = 0, c = 0; for (let k = -6; k <= 6; k++) { const j = i + k; if (j >= 0 && j <= N) { t += cutH[j]; c++; } } cutHs[i] = t / c; }
+
+      // --- 噴漿邊坡貼圖 ---
+      const wc = document.createElement('canvas'); wc.width = 256; wc.height = 256;
+      const wg = wc.getContext('2d');
+      wg.fillStyle = '#8b8a82'; wg.fillRect(0, 0, 256, 256);
+      for (let i = 0; i < 2200; i++) { const v = 110 + rr() * 50; wg.fillStyle = `rgba(${v},${v},${v - 8},0.5)`; wg.fillRect(rr() * 256, rr() * 256, 2 + rr() * 5, 2 + rr() * 5); }
+      for (let i = 0; i < 26; i++) { const x = rr() * 256, w = 3 + rr() * 9; const gr = wg.createLinearGradient(0, 0, 0, 256);
+        gr.addColorStop(0, 'rgba(40,48,30,0.55)'); gr.addColorStop(1, 'rgba(40,48,30,0)'); wg.fillStyle = gr; wg.fillRect(x, 0, w, 120 + rr() * 136); }
+      for (let i = 0; i < 40; i++) { wg.fillStyle = `rgba(${60 + rr() * 30},${85 + rr() * 30},${40},0.45)`; wg.beginPath(); wg.arc(rr() * 256, 180 + rr() * 76, 6 + rr() * 16, 0, 6.283); wg.fill(); }
+      wg.fillStyle = '#2b2b28'; for (let x = 32; x < 256; x += 64) { wg.beginPath(); wg.arc(x, 150, 5, 0, 6.283); wg.fill(); }
+      const wallTex = new THREE.CanvasTexture(wc); wallTex.wrapS = wallTex.wrapT = THREE.RepeatWrapping; wallTex.anisotropy = 4;
+      const wallMat = new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.95, side: THREE.DoubleSide });
+      const ditchMat = new THREE.MeshStandardMaterial({ color: 0x5d5d58, roughness: 0.95, side: THREE.DoubleSide });
+
+      // --- 邊坡與排水溝（上邊坡側，連續分段） ---
+      let wallP = [], wallUV = [], wallI = [], ditP = [], ditI = [], run = 0, acc = 0;
+      const flush = () => {
+        if (wallP.length >= 12) {
+          const g = new THREE.BufferGeometry();
+          g.setAttribute('position', new THREE.Float32BufferAttribute(wallP, 3));
+          g.setAttribute('uv', new THREE.Float32BufferAttribute(wallUV, 2));
+          g.setIndex(wallI); g.computeVertexNormals();
+          const m = new THREE.Mesh(g, wallMat); m.receiveShadow = true; scene.add(m);
+          const g2 = new THREE.BufferGeometry();
+          g2.setAttribute('position', new THREE.Float32BufferAttribute(ditP, 3));
+          g2.setIndex(ditI); g2.computeVertexNormals();
+          scene.add(new THREE.Mesh(g2, ditchMat));
+        }
+        wallP = []; wallUV = []; wallI = []; ditP = []; ditI = [];
+      };
+      for (let i = 0; i <= N; i++) {
+        const sm = roadSamples[i], sd = upSide[i];
+        if (i > 0) acc += sm.pos.distanceTo(roadSamples[i - 1].pos);
+        const h = THREE.MathUtils.clamp(cutHs[i] * 0.75, 0, 7.5);
+        const topOff = 6.25 + h * 0.38;
+        const ok = sd !== 0 && cutHs[i] > 2.8 && innerSide(i) !== sd &&
+          !nearOtherRoad(sm.pos.x + sm.right.x * sd * topOff, sm.pos.z + sm.right.z * sd * topOff, i, topOff - 0.6) &&
+          (i === 0 || upSide[i - 1] === sd);
+        if (!ok) { flush(); continue; }
+        const P = (off, y) => [sm.pos.x + sm.right.x * sd * off, sm.pos.y + y, sm.pos.z + sm.right.z * sd * off];
+        const base = wallP.length / 3;
+        wallP.push(...P(6.2, -0.25), ...P(topOff, Math.max(2.5, h)));
+        wallUV.push(acc * 0.12, 0, acc * 0.12, Math.max(2.5, h) * 0.13);
+        if (base >= 2) wallI.push(base - 2, base, base - 1, base - 1, base, base + 1);
+        const db = ditP.length / 3;
+        ditP.push(...P(5.42, 0.03), ...P(5.48, -0.32), ...P(6.15, -0.32), ...P(6.2, -0.25));
+        if (db >= 4) for (let k = 0; k < 3; k++) ditI.push(db - 4 + k, db + k, db - 3 + k, db - 3 + k, db + k, db + 1 + k);
+      }
+      flush();
+
+      // --- 紅白反光導標（下邊坡／外側，急彎外側加密） ---
+      const delMats = [];
+      for (let i = 2; i < N - 2; i++) {
+        const c = roadSamples[i].curvature;
+        const step = c > 0.3 ? 3 : 7;
+        if (i % step !== 0) continue;
+        [-1, 1].forEach(sd => {
+          if (upSide[i] === sd && cutHs[i] > 2.8) return;
+          if (innerSide(i) === sd) return;
+          const sm = roadSamples[i];
+          const x = sm.pos.x + sm.right.x * sd * 5.95, z = sm.pos.z + sm.right.z * sd * 5.95;
+          if (nearOtherRoad(x, z, i, 5.5)) return;
+          const d = new THREE.Object3D(); d.position.set(x, sm.pos.y, z);
+          d.rotation.y = Math.atan2(sm.flatTangent.x, sm.flatTangent.z); d.updateMatrix(); delMats.push(d.matrix.clone());
+        });
+      }
+      const postG = new THREE.BoxGeometry(0.1, 1.05, 0.1); postG.translate(0, 0.525, 0);
+      const reflG = new THREE.BoxGeometry(0.11, 0.16, 0.11); reflG.translate(0, 0.9, 0);
+      const postI = new THREE.InstancedMesh(postG, new THREE.MeshStandardMaterial({ color: 0xf1f1ec, roughness: 0.6 }), delMats.length || 1);
+      const reflI = new THREE.InstancedMesh(reflG, new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 0.35, 0.15) }), delMats.length || 1);
+      delMats.forEach((m, k) => { postI.setMatrixAt(k, m); reflI.setMatrixAt(k, m); });
+      postI.count = reflI.count = delMats.length; scene.add(postI, reflI);
+
+      // --- 電線桿與電線（下邊坡側，約每 45 公尺一支） ---
+      const poleMats = [], armMats = [], wirePts = [];
+      let prevTop = null;
+      const spacing = Math.max(8, Math.round(45 / (totalTrackLength / N)));
+      for (let i = 6; i < N - 6; i += spacing) {
+        const sm = roadSamples[i];
+        let sd = upSide[i] !== 0 ? -upSide[i] : 1;
+        if (innerSide(i) === sd) sd = -sd;
+        const x = sm.pos.x + sm.right.x * sd * 7.3, z = sm.pos.z + sm.right.z * sd * 7.3;
+        if (nearOtherRoad(x, z, i, 6.6) || (upSide[i] === sd && cutHs[i] > 2.8)) { prevTop = null; continue; }
+        const baseY = Math.min(sm.pos.y - 0.2, getTerrainHeightAt(x, z));
+        const topY = sm.pos.y + 9.5, len = topY - baseY;
+        const o = new THREE.Object3D(); o.position.set(x, baseY, z); o.scale.set(1, len, 1); o.updateMatrix(); poleMats.push(o.matrix.clone());
+        const a = new THREE.Object3D(); a.position.set(x, topY - 0.35, z); a.rotation.y = Math.atan2(sm.right.x, sm.right.z); a.updateMatrix(); armMats.push(a.matrix.clone());
+        const tops = [-0.7, 0, 0.7].map(off => new THREE.Vector3(x + sm.right.x * off, topY - 0.22, z + sm.right.z * off));
+        if (prevTop) for (let w = 0; w < 3; w++) {
+          const A = prevTop[w], B = tops[w], span = A.distanceTo(B);
+          if (span > 90) continue;
+          for (let t = 0; t < 10; t++) {
+            const t0 = t / 10, t1 = (t + 1) / 10;
+            const pA = A.clone().lerp(B, t0); pA.y -= Math.sin(t0 * Math.PI) * span * 0.018;
+            const pB = A.clone().lerp(B, t1); pB.y -= Math.sin(t1 * Math.PI) * span * 0.018;
+            wirePts.push(pA.x, pA.y, pA.z, pB.x, pB.y, pB.z);
+          }
+        }
+        prevTop = tops;
+      }
+      const poleG = new THREE.CylinderGeometry(0.13, 0.17, 1, 7); poleG.translate(0, 0.5, 0);
+      const poleI = new THREE.InstancedMesh(poleG, new THREE.MeshStandardMaterial({ color: 0x9a988f, roughness: 0.85 }), poleMats.length || 1);
+      poleMats.forEach((m, k) => poleI.setMatrixAt(k, m)); poleI.count = poleMats.length; poleI.castShadow = true;
+      const armI = new THREE.InstancedMesh(new THREE.BoxGeometry(1.8, 0.1, 0.1), new THREE.MeshStandardMaterial({ color: 0x55534e }), armMats.length || 1);
+      armMats.forEach((m, k) => armI.setMatrixAt(k, m)); armI.count = armMats.length;
+      const wireG = new THREE.BufferGeometry(); wireG.setAttribute('position', new THREE.Float32BufferAttribute(wirePts, 3));
+      scene.add(poleI, armI, new THREE.LineSegments(wireG, new THREE.LineBasicMaterial({ color: 0x222222 })));
+    }
+    buildRoadsideDetails();
 
     // =========================================================================
     // 6. 沿線 3D 實景地標、1～36 彎紅色雲朵鐵雕牌、斜向反光鏡與太平雲梯
@@ -1740,6 +2425,9 @@ function createConvexMirrorMesh() {
 }
 
     function buildAll36BendsAndMirrors() {
+      const placedSignPositions = [];
+
+      // 1. 僅在 1～36 彎實測座標擺放紅色雲朵茶樹鐵雕牌
       bendMarkers.forEach(bm => {
         const s = roadSamples[bm.sampleIndex];
         const prevT = roadSamples[Math.max(0, bm.sampleIndex - 5)].flatTangent;
@@ -1748,25 +2436,85 @@ function createConvexMirrorMesh() {
         // 外側懸崖方向：右轉時左側(-1)為外側，左轉時右側(+1)為外側
         const outerSide = crossY > 0 ? -1 : 1;
 
-        // 1. 紅色雲朵茶樹鐵雕牌立於彎心外側路肩
         const sculpture = createRedCloudBendSculpture(bm.bendNum, bm.ele);
         const signPos = s.pos.clone().addScaledVector(s.right, outerSide * (ROAD_HALF_WIDTH + 0.55));
         sculpture.position.copy(signPos);
         const lookTarget = signPos.clone().addScaledVector(s.flatTangent, -12.0).addScaledVector(s.right, -outerSide * 4.0);
         sculpture.lookAt(lookTarget.x, signPos.y, lookTarget.z);
         landmarkGroup.add(sculpture);
+        placedSignPositions.push(signPos);
+      });
 
-        // 2. 彎道外側橘框凸面反光鏡（與道路形成約 42° 夾角面向入彎來車）
-        const mirror = createConvexMirrorMesh();
-        const mirrorSample = roadSamples[Math.min(NUM_SAMPLES, bm.sampleIndex + 2)];
+      // 2. 獨立抽出的反光鏡自動擺放條件：沿全線掃描局部曲率峰值（所有轉彎處自動設置）
+      buildAutoConvexMirrors(placedSignPositions);
+    }
+
+    function buildAutoConvexMirrors(placedSignPositions = []) {
+      const CURVATURE_THRESHOLD = 0.28; // 轉彎曲率門檻（涵蓋髮夾彎與中大型盲彎）
+      const MIN_MIRROR_SPACING_IDX = 18; // 相鄰反光鏡最小採樣點間距，避免同彎重複密集設置
+      let lastMirrorIdx = -MIN_MIRROR_SPACING_IDX;
+
+      for (let i = 16; i <= NUM_SAMPLES - 16; i++) {
+        if (i - lastMirrorIdx < MIN_MIRROR_SPACING_IDX) continue;
+
+        const c = roadSamples[i].curvature;
+        if (c < CURVATURE_THRESHOLD) continue;
+
+        // 確認為局部曲率轉彎頂點（Apex）
+        if (
+          c < roadSamples[i - 1].curvature ||
+          c < roadSamples[i - 2].curvature ||
+          c < roadSamples[i + 1].curvature ||
+          c < roadSamples[i + 2].curvature
+        ) {
+          continue;
+        }
+
+        const prevT = roadSamples[Math.max(0, i - 5)].flatTangent;
+        const nextT = roadSamples[Math.min(NUM_SAMPLES, i + 5)].flatTangent;
+        const crossY = prevT.x * nextT.z - prevT.z * nextT.x;
+        const outerSide = crossY > 0 ? -1 : 1;
+
+        // 擺設在彎心略偏出彎側的外側路肩（讓入彎來車視線正好垂直望見鏡面）
+        const mirrorIdx = Math.min(NUM_SAMPLES - 6, i + 2);
+        const mirrorSample = roadSamples[mirrorIdx];
         const mirrorPos = mirrorSample.pos.clone().addScaledVector(mirrorSample.right, outerSide * (ROAD_HALF_WIDTH + 0.65));
+
+        // 檢查是否過於貼近紅色彎道牌（若重疊則順延微調或跳過）
+        let overlapsSign = false;
+        for (let k = 0; k < placedSignPositions.length; k++) {
+          if (mirrorPos.distanceTo(placedSignPositions[k]) < 2.2) {
+            overlapsSign = true;
+            break;
+          }
+        }
+        if (overlapsSign) {
+          const altSample = roadSamples[Math.min(NUM_SAMPLES - 6, mirrorIdx + 3)];
+          mirrorPos.copy(altSample.pos).addScaledVector(altSample.right, outerSide * (ROAD_HALF_WIDTH + 0.65));
+        }
+
+        // 檢查是否侵入上下層鄰近柏油車道
+        let encroachesRoad = false;
+        for (let j = 0; j <= NUM_SAMPLES; j += 4) {
+          if (Math.abs(mirrorIdx - j) < 30) continue;
+          const other = roadSamples[j].pos;
+          if (Math.abs(other.y - mirrorPos.y) < 5.5 && Math.hypot(other.x - mirrorPos.x, other.z - mirrorPos.z) < ROAD_HALF_WIDTH + 1.0) {
+            encroachesRoad = true;
+            break;
+          }
+        }
+        if (encroachesRoad) continue;
+
+        const mirror = createConvexMirrorMesh();
         mirror.position.copy(mirrorPos);
         const mirrorAim = mirrorPos.clone()
           .addScaledVector(mirrorSample.flatTangent, -14.0)
           .addScaledVector(mirrorSample.right, -outerSide * 12.5);
         mirror.userData.head.lookAt(mirrorAim.x, mirrorPos.y + 1.4, mirrorAim.z);
         landmarkGroup.add(mirror);
-      });
+
+        lastMirrorIdx = i;
+      }
     }
 
     buildAll36BendsAndMirrors();
@@ -2025,64 +2773,145 @@ function createConvexMirrorMesh() {
         const entrySample = roadSamples[Math.max(0, idx36 - 8)];
         const exitSample = roadSamples[Math.min(NUM_SAMPLES, idx36 + 8)];
 
-        // D1. 右側彎心草坡槽化島、三塊天然巨石、水泥排水矮牆與歪斜古松（精準計算與入／出彎雙向道路的安全距離）
+        // D1. 彎心舌狀草坡槽化島、雙層水泥石墩、分叉古松與路緣弧形路燈（依實景照還原）
+        const islandCenterIdx = Math.min(NUM_SAMPLES - 6, idx36 + 2);
+        const s36IslandRef = roadSamples[islandCenterIdx];
+        const islandEntryRef = roadSamples[Math.max(0, islandCenterIdx - 7)];
+        const islandExitRef = roadSamples[Math.min(NUM_SAMPLES, islandCenterIdx + 7)];
         const innerBisector = new THREE.Vector3()
-          .addVectors(entrySample.right.clone().multiplyScalar(innerSide), exitSample.right.clone().multiplyScalar(innerSide))
+          .addVectors(islandEntryRef.right.clone().multiplyScalar(innerSide), islandExitRef.right.clone().multiplyScalar(innerSide))
           .normalize();
-        const islandCenter = s36.pos.clone().addScaledVector(innerBisector, ROAD_HALF_WIDTH + 7.6);
-        const islandMound = new THREE.Mesh(
-          new THREE.SphereGeometry(5.6, 20, 14),
-          new THREE.MeshStandardMaterial({ color: 0x4d7c0f, roughness: 0.92 })
-        );
-        islandMound.scale.set(1.15, 0.38, 1.0);
-        islandMound.position.copy(islandCenter);
-        landmarkGroup.add(islandMound);
+        const islandGroup = new THREE.Group();
+        // 沿出彎方向推進一小段，使整座草坡島對齊髮夾彎幾何圓心，並維持內側白線淨空
+        const islandLookOrigin = s36IslandRef.pos.clone().addScaledVector(s36IslandRef.flatTangent, 1.35);
+        const islandTipPos = islandLookOrigin.clone().addScaledVector(innerBisector, ROAD_HALF_WIDTH + 0.72);
+        islandGroup.position.copy(islandTipPos);
+        islandGroup.lookAt(islandLookOrigin.x, islandTipPos.y, islandLookOrigin.z);
+        islandGroup.updateMatrixWorld(true);
 
-        // 草坡上的三塊天然巨石（對應照片右下角巨石堆）
-        const boulderMat = new THREE.MeshStandardMaterial({ color: 0x57534e, roughness: 0.95 });
-        [
-          { dx: 1.6, dz: 2.2, r: 1.35, sy: 1.15 },
-          { dx: -0.4, dz: 1.4, r: 0.85, sy: 0.8 },
-          { dx: 0.9, dz: 0.1, r: 0.72, sy: 0.75 }
-        ].forEach(b => {
-          const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(b.r, 1), boulderMat);
-          rock.scale.set(1.2, b.sy, 1.0);
-          rock.position.copy(islandCenter)
-            .addScaledVector(s36.right, innerSide * b.dx)
-            .addScaledVector(s36.flatTangent, -b.dz);
-          rock.position.y += b.r * 0.65;
-          rock.rotation.set(0.3, b.dx * 1.4, 0.2);
-          landmarkGroup.add(rock);
-        });
+        // 輔助函式：取得島上局部座標對應的真實 3D 地形局部高度，讓物件貼合地形不懸空
+        const tmpWorldPt = new THREE.Vector3();
+        function getLocalTerrainY(lx, lz) {
+          tmpWorldPt.set(lx, 0, lz).applyMatrix4(islandGroup.matrixWorld);
+          return getTerrainHeightAt(tmpWorldPt.x, tmpWorldPt.z) - islandGroup.position.y;
+        }
 
-        const curbWall = new THREE.Mesh(
-          new THREE.BoxGeometry(3.2, 0.85, 0.42),
+        // 外圈水泥排水路緣（貼合真實地形高度）
+        const curbRim = new THREE.Mesh(
+          new THREE.TorusGeometry(2.42, 0.14, 8, 28, Math.PI * 1.15),
           new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.88 })
         );
-        curbWall.position.copy(islandCenter).addScaledVector(innerBisector, -4.6);
-        curbWall.position.y += 0.42;
-        curbWall.lookAt(s36.pos);
-        landmarkGroup.add(curbWall);
+        curbRim.rotation.x = Math.PI / 2;
+        curbRim.rotation.z = -Math.PI * 0.075;
+        curbRim.scale.set(1.05, 1.85, 1.0);
+        curbRim.position.set(0, getLocalTerrainY(0, -1.8) + 0.06, -3.9);
+        islandGroup.add(curbRim);
 
-        // 彎心歪斜古松樹
+        // 彎心前沿「雙層風化水泥石墩」＋右側疊石＋頂部橘紅反光點
+        const weatheredConcreteMat = new THREE.MeshStandardMaterial({ color: 0x78716c, roughness: 0.92 });
+        const darkMossConcreteMat = new THREE.MeshStandardMaterial({ color: 0x44403c, roughness: 0.95 });
+
+        // 前階較矮水泥石墩
+        const frontPier = new THREE.Mesh(new THREE.BoxGeometry(1.75, 0.46, 0.34), weatheredConcreteMat);
+        frontPier.position.set(-0.1, getLocalTerrainY(-0.1, -1.15) + 0.22, -1.15);
+        frontPier.rotation.y = 0.12;
+        islandGroup.add(frontPier);
+
+        // 後階較高深色風化水泥石墩
+        const backPier = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.86, 0.32), darkMossConcreteMat);
+        backPier.position.set(-0.08, getLocalTerrainY(-0.08, -1.52) + 0.42, -1.52);
+        backPier.rotation.y = 0.12;
+        islandGroup.add(backPier);
+
+        // 石墩頂端兩顆迷你橘紅色反光片
+        const pierReflectorMat = new THREE.MeshBasicMaterial({ color: 0xf97316 });
+        [-0.78, 0.62].forEach(rx => {
+          const refDot = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.08), pierReflectorMat);
+          refDot.position.set(rx, backPier.position.y + 0.46, -1.48);
+          islandGroup.add(refDot);
+        });
+
+        // 石墩右側護坡天然疊石群
+        const boulderMat = new THREE.MeshStandardMaterial({ color: 0x57534e, roughness: 0.95 });
+        [
+          { x: 1.02, dy: 0.18, z: -1.35, r: 0.34, sy: 0.9 },
+          { x: 1.28, dy: 0.14, z: -1.78, r: 0.28, sy: 0.85 },
+          { x: 0.92, dy: 0.22, z: -1.85, r: 0.30, sy: 0.95 },
+          { x: 1.45, dy: 0.16, z: -2.45, r: 0.36, sy: 0.8 }
+        ].forEach(b => {
+          const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(b.r, 1), boulderMat);
+          rock.scale.set(1.15, b.sy, 1.0);
+          rock.position.set(b.x, getLocalTerrainY(b.x, b.z) + b.dy, b.z);
+          rock.rotation.set(0.3, b.x * 1.6, 0.2);
+          islandGroup.add(rock);
+        });
+
+        // 石墩後方草坡上的「分叉多層次彎心古松」
         const pineGroup = new THREE.Group();
-        const pineTrunk = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.16, 0.26, 2.8, 7),
-          new THREE.MeshStandardMaterial({ color: 0x451a03, roughness: 0.9 })
+        const barkMat = new THREE.MeshStandardMaterial({ color: 0x451a03, roughness: 0.92 });
+        const pineLowerMat = new THREE.MeshStandardMaterial({ color: 0x365314, roughness: 0.88 });
+        const pineUpperMat = new THREE.MeshStandardMaterial({ color: 0x4d7c0f, roughness: 0.85 });
+
+        const mainTrunk = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.17, 1.25, 7), barkMat);
+        mainTrunk.position.set(0, 0.6, 0);
+        mainTrunk.rotation.z = 0.12;
+        pineGroup.add(mainTrunk);
+
+        // 左、中、右三根斜伸主枝幹
+        [
+          { x: -0.28, y: 1.42, z: 0.08, rz: 0.42, rx: 0.08, len: 1.15 },
+          { x: 0.06,  y: 1.62, z: -0.05, rz: -0.08, rx: -0.06, len: 1.35 },
+          { x: 0.34,  y: 1.38, z: 0.10, rz: -0.48, rx: 0.10, len: 1.10 }
+        ].forEach(br => {
+          const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.09, br.len, 6), barkMat);
+          branch.position.set(br.x, br.y, br.z);
+          branch.rotation.set(br.rx, 0, br.rz);
+          pineGroup.add(branch);
+        });
+
+        // 五團緊密相連的松針樹冠層（自然不規則展葉）
+        [
+          { x: -0.68, y: 1.98, z: 0.18, r: 0.72, sx: 1.25, sy: 0.68, sz: 1.1, mat: pineLowerMat },
+          { x: 0.05,  y: 2.48, z: -0.05, r: 0.86, sx: 1.2,  sy: 0.78, sz: 1.15, mat: pineUpperMat },
+          { x: 0.78,  y: 1.88, z: 0.16, r: 0.74, sx: 1.28, sy: 0.65, sz: 1.08, mat: pineLowerMat },
+          { x: -0.25, y: 2.18, z: 0.38, r: 0.64, sx: 1.15, sy: 0.68, sz: 1.05, mat: pineUpperMat },
+          { x: 0.28,  y: 2.15, z: -0.35, r: 0.66, sx: 1.18, sy: 0.70, sz: 1.05, mat: pineLowerMat }
+        ].forEach(c => {
+          const foliage = new THREE.Mesh(new THREE.DodecahedronGeometry(c.r, 1), c.mat);
+          foliage.scale.set(c.sx, c.sy, c.sz);
+          foliage.position.set(c.x, c.y, c.z);
+          foliage.rotation.set(0.2, c.x * 1.3, 0.15);
+          pineGroup.add(foliage);
+        });
+
+        pineGroup.position.set(-0.08, getLocalTerrainY(-0.08, -3.55) - 0.06, -3.55);
+        islandGroup.add(pineGroup);
+
+        // 舌狀草坡右側路緣的細長弧形鍍鋅路燈
+        const lampGroup = new THREE.Group();
+        const lampMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.72, roughness: 0.32 });
+        const lampPost = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.08, 4.9, 8), lampMat);
+        lampPost.position.y = 2.45;
+        lampGroup.add(lampPost);
+
+        const lampArm = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 1.35, 6), lampMat);
+        lampArm.position.set(0.55, 5.05, 0);
+        lampArm.rotation.z = -1.12;
+        lampGroup.add(lampArm);
+
+        const lampHead = new THREE.Mesh(
+          new THREE.BoxGeometry(0.42, 0.08, 0.16),
+          new THREE.MeshStandardMaterial({ color: 0xe2e8f0, emissive: 0xfef08a, emissiveIntensity: 0.25 })
         );
-        pineTrunk.position.y = 1.3;
-        pineTrunk.rotation.z = 0.22;
-        pineGroup.add(pineTrunk);
-        const pineCrown = new THREE.Mesh(
-          new THREE.DodecahedronGeometry(2.1, 1),
-          new THREE.MeshStandardMaterial({ color: 0x365314, roughness: 0.88 })
-        );
-        pineCrown.scale.set(1.35, 0.78, 1.2);
-        pineCrown.position.set(-0.35, 2.9, 0);
-        pineGroup.add(pineCrown);
-        pineGroup.position.copy(islandCenter).addScaledVector(innerBisector, -1.6);
-        pineGroup.position.y += 1.0;
-        landmarkGroup.add(pineGroup);
+        lampHead.position.set(1.12, 5.28, 0);
+        lampHead.rotation.z = 0.22;
+        lampGroup.add(lampHead);
+
+        lampGroup.position.set(1.88, getLocalTerrainY(1.88, -3.45) - 0.04, -3.45);
+        lampGroup.rotation.y = 0.35;
+        islandGroup.add(lampGroup);
+
+        landmarkGroup.add(islandGroup);
 
         // D2. 繞過第 36 彎彎心至出彎外側的白底黑黃斜紋水泥護欄、雙連箭頭牌、旗桿與「雲海大飯店 Welcome」大型看板
         const barrierPts = [];
@@ -2696,113 +3525,13 @@ function createConvexMirrorMesh() {
     buildSpecialLandmarks();
 
     // =========================================================================
-    // 7. 賽車 3D 模型與甩尾白煙特效
+    // 7. 汽車 3D 模型與甩尾白煙特效（js/car.js）
     // =========================================================================
-    const carGroup = new THREE.Group();
-    scene.add(carGroup);
-
-    const wheelMeshes = [];
-    let brakeLightMat = null;
-
-    function buildCar() {
-      const bodyMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, metalness: 0.45, roughness: 0.25 });
-      const carbonMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, metalness: 0.3, roughness: 0.55 });
-      const glassMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.85, roughness: 0.15 });
-
-      // 下車身主體
-      const chassis = new THREE.Mesh(new THREE.BoxGeometry(1.88, 0.62, 4.25), bodyMat);
-      chassis.position.y = 0.56;
-      chassis.castShadow = true;
-      carGroup.add(chassis);
-
-      // 引擎蓋黑色碳纖維塗裝與側邊藤原豆腐店風雙色線條
-      const hood = new THREE.Mesh(new THREE.BoxGeometry(1.76, 0.06, 1.38), carbonMat);
-      hood.position.set(0, 0.88, 1.28);
-      carGroup.add(hood);
-
-      const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.91, 0.18, 4.27), carbonMat);
-      stripe.position.set(0, 0.36, 0);
-      carGroup.add(stripe);
-
-      // 座艙與車窗
-      const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.56, 0.54, 2.05), bodyMat);
-      cabin.position.set(0, 1.12, -0.18);
-      cabin.castShadow = true;
-      carGroup.add(cabin);
-
-      const windshield = new THREE.Mesh(new THREE.BoxGeometry(1.48, 0.44, 2.12), glassMat);
-      windshield.position.set(0, 1.1, -0.18);
-      carGroup.add(windshield);
-
-      // 尾翼
-      const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.72, 0.08, 0.28), carbonMat);
-      spoiler.position.set(0, 1.02, -1.96);
-      carGroup.add(spoiler);
-
-      // 頭燈與煞車尾燈
-      const headMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
-      [-0.64, 0.64].forEach(hx => {
-        const hl = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.16, 0.08), headMat);
-        hl.position.set(hx, 0.66, 2.13);
-        carGroup.add(hl);
-      });
-
-      brakeLightMat = new THREE.MeshBasicMaterial({ color: 0x7f1d1d });
-      [-0.62, 0.62].forEach(bx => {
-        const bl = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.16, 0.08), brakeLightMat);
-        bl.position.set(bx, 0.68, -2.13);
-        carGroup.add(bl);
-      });
-
-      // 四顆輪胎
-      const wheelGeo = new THREE.CylinderGeometry(0.35, 0.35, 0.26, 16);
-      wheelGeo.rotateZ(Math.PI / 2);
-      const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.8 });
-      const wheelCoords = [
-        { x: -0.92, y: 0.35, z: 1.32, front: true },
-        { x: 0.92, y: 0.35, z: 1.32, front: true },
-        { x: -0.92, y: 0.35, z: -1.32, front: false },
-        { x: 0.92, y: 0.35, z: -1.32, front: false }
-      ];
-      wheelCoords.forEach(wc => {
-        const pivot = new THREE.Group();
-        pivot.position.set(wc.x, wc.y, wc.z);
-        const wMesh = new THREE.Mesh(wheelGeo, wheelMat);
-        wMesh.castShadow = true;
-        pivot.add(wMesh);
-        carGroup.add(pivot);
-        wheelMeshes.push({ pivot, mesh: wMesh, front: wc.front });
-      });
-    }
-
-    buildCar();
-
-    // 甩尾白煙粒子池
-    const SMOKE_COUNT = 90;
-    const smokeParticles = [];
-    const smokeGeo = new THREE.SphereGeometry(0.32, 6, 6);
-    for (let i = 0; i < SMOKE_COUNT; i++) {
-      const m = new THREE.Mesh(
-        smokeGeo,
-        new THREE.MeshBasicMaterial({ color: 0xf1f5f9, transparent: true, opacity: 0 })
-      );
-      m.visible = false;
-      scene.add(m);
-      smokeParticles.push({ mesh: m, life: 0, maxLife: 0.55, vel: new THREE.Vector3() });
-    }
-    let smokeCursor = 0;
-
-    function spawnDriftSmoke(pos) {
-      const p = smokeParticles[smokeCursor];
-      smokeCursor = (smokeCursor + 1) % SMOKE_COUNT;
-      p.mesh.visible = true;
-      p.mesh.position.copy(pos);
-      p.mesh.position.y += 0.18;
-      p.mesh.scale.setScalar(0.5);
-      p.life = p.maxLife;
-      p.vel.set((Math.random() - 0.5) * 1.4, 0.9 + Math.random() * 0.7, (Math.random() - 0.5) * 1.4);
-    }
-
+    const car = createCar(scene, renderer);
+    const carGroup = car.group;
+    const wheelMeshes = car.wheelMeshes;
+    const brakeLightMat = car.brakeLightMat;
+    const spawnDriftSmoke = car.spawnDriftSmoke;
     // =========================================================================
     // 8. 右上角 10 公尺等高線小地圖（同步自然樹枝狀山脊、溪谷與龜山主峰高程場）
     // =========================================================================
@@ -2815,6 +3544,7 @@ function createConvexMirrorMesh() {
     let mapBounds = { minX: -1200, maxX: 1450, minZ: -520, maxZ: 680 };
 
     function getSmoothMapElevationAt(x, z) {
+      if (DEM) return sampleDEM(x, z);
       const gx = Math.floor(x / GRID_CELL);
       const gz = Math.floor(z / GRID_CELL);
       let weightedSum = 0;
@@ -3033,28 +3763,17 @@ function createConvexMirrorMesh() {
     // 9. 車輛物理狀態、快速定位傳送、互動控制與主渲染迴圈
     // =========================================================================
     const START_SAMPLE_INDEX = 14; // 第 1 彎前起始位置
-    const carState = {
-      pos: new THREE.Vector3(),
-      vel: new THREE.Vector3(),
-      heading: 0,
-      steerAngle: 0,
-      speed: 0,
-      nearestSampleIdx: START_SAMPLE_INDEX,
-      lateralOffset: 0,
-      wheelSpin: 0,
-      roll: 0,
-      pitch: 0,
-      driftScore: 0,
-      maxSpeedKmh: 0,
-      elapsedTime: 0,
-      raceStarted: false,
-      raceFinished: false
-    };
-
-    const keys = { forward: false, backward: false, left: false, right: false, handbrake: false };
     let cameraMode = 0; // 0: 標準追尾, 1: 引擎蓋第一人稱, 2: 遠距俯瞰
     let cameraShake = 0;
     let toastTimeout = null;
+
+    // 駕駛（車輛狀態、操控、物理、碰撞、車身姿態）在 js/driving.js
+    const driving = createDriving({
+      roadSamples, NUM_SAMPLES, ROAD_HALF_WIDTH, START_SAMPLE_INDEX,
+      carGroup, wheelMeshes, brakeLightMat, spawnDriftSmoke,
+      onImpact: shake => { cameraShake = shake; }
+    });
+    const { carState, keys } = driving;
 
     function showToast(msg) {
       const banner = document.getElementById('toast-banner');
@@ -3070,16 +3789,7 @@ function createConvexMirrorMesh() {
     }
 
     function teleportToSample(sampleIdx, resetStats = false) {
-      const idx = THREE.MathUtils.clamp(Math.round(sampleIdx), 0, NUM_SAMPLES - 1);
-      const s = roadSamples[idx];
-      carState.pos.copy(s.pos);
-      carState.vel.set(0, 0, 0);
-      carState.speed = 0;
-      carState.steerAngle = 0;
-      carState.heading = Math.atan2(s.flatTangent.x, s.flatTangent.z);
-      carState.nearestSampleIdx = idx;
-      carState.lateralOffset = 0;
-      carState.roll = 0;
+      const idx = driving.placeAtSample(sampleIdx);
 
       // 重設該位置之後的地標提示狀態
       landmarkTriggers.forEach(lt => {
@@ -3102,13 +3812,7 @@ function createConvexMirrorMesh() {
     }
 
     function recoverCarOnRoad() {
-      const s = roadSamples[carState.nearestSampleIdx];
-      carState.pos.copy(s.pos);
-      carState.vel.set(0, 0, 0);
-      carState.speed = 0;
-      carState.steerAngle = 0;
-      carState.heading = Math.atan2(s.flatTangent.x, s.flatTangent.z);
-      carState.lateralOffset = 0;
+      driving.recoverOnRoad();
       showToast('🔄 已在目前路段原地回正');
     }
 
@@ -3151,27 +3855,14 @@ function createConvexMirrorMesh() {
       progressTrack.releasePointerCapture(e.pointerId);
     });
 
-    // 鍵盤與按鈕事件綁定
+    // 鍵盤與按鈕事件綁定（駕駛按鍵由 driving 模組處理，這裡只處理功能鍵）
+    driving.bindKeyboard();
     window.addEventListener('keydown', e => {
       const k = e.key.toLowerCase();
-      if (k === 'w' || e.key === 'ArrowUp') keys.forward = true;
-      if (k === 's' || e.key === 'ArrowDown') keys.backward = true;
-      if (k === 'a' || e.key === 'ArrowLeft') keys.left = true;
-      if (k === 'd' || e.key === 'ArrowRight') keys.right = true;
-      if (e.code === 'Space') { e.preventDefault(); keys.handbrake = true; }
       if (k === 'c') cycleCamera();
       if (k === 'f') cycleFog();
       if (k === 'r') recoverCarOnRoad();
       if (k === 'h') resetToStart();
-    });
-
-    window.addEventListener('keyup', e => {
-      const k = e.key.toLowerCase();
-      if (k === 'w' || e.key === 'ArrowUp') keys.forward = false;
-      if (k === 's' || e.key === 'ArrowDown') keys.backward = false;
-      if (k === 'a' || e.key === 'ArrowLeft') keys.left = false;
-      if (k === 'd' || e.key === 'ArrowRight') keys.right = false;
-      if (e.code === 'Space') keys.handbrake = false;
     });
 
     function cycleCamera() {
@@ -3186,11 +3877,15 @@ function createConvexMirrorMesh() {
       scene.fog.density = fl.density;
       scene.fog.color.setHex(fl.color);
       scene.background.setHex(fl.color);
+      skyU.uHorizon.value.setHex(fl.color);
+      skyU.uCover.value = skyFogPreset[currentFogIdx].cover;
+      skyU.uHaze.value = skyFogPreset[currentFogIdx].haze;
       showToast(`🌫️ 山嵐濃度：${fl.label}`);
     }
 
     document.getElementById('btn-camera').addEventListener('click', cycleCamera);
     document.getElementById('btn-fog').addEventListener('click', cycleFog);
+    document.getElementById('btn-post').addEventListener('click', () => togglePost());
     document.getElementById('btn-recover').addEventListener('click', recoverCarOnRoad);
     document.getElementById('btn-home').addEventListener('click', resetToStart);
     document.getElementById('btn-replay').addEventListener('click', resetToStart);
@@ -3200,21 +3895,11 @@ function createConvexMirrorMesh() {
     });
 
     // 手機觸控綁定
-    function bindTouchHold(btnId, keyName) {
-      const el = document.getElementById(btnId);
-      if (!el) return;
-      const onDown = e => { e.preventDefault(); keys[keyName] = true; el.classList.add('active'); };
-      const onUp = e => { e.preventDefault(); keys[keyName] = false; el.classList.remove('active'); };
-      el.addEventListener('pointerdown', onDown);
-      el.addEventListener('pointerup', onUp);
-      el.addEventListener('pointerleave', onUp);
-      el.addEventListener('pointercancel', onUp);
-    }
-    bindTouchHold('touch-left', 'left');
-    bindTouchHold('touch-right', 'right');
-    bindTouchHold('touch-gas', 'forward');
-    bindTouchHold('touch-brake', 'backward');
-    bindTouchHold('touch-handbrake', 'handbrake');
+    driving.bindTouchHold('touch-left', 'left');
+    driving.bindTouchHold('touch-right', 'right');
+    driving.bindTouchHold('touch-gas', 'forward');
+    driving.bindTouchHold('touch-brake', 'backward');
+    driving.bindTouchHold('touch-handbrake', 'handbrake');
     document.getElementById('touch-cam')?.addEventListener('click', cycleCamera);
     document.getElementById('touch-recover')?.addEventListener('click', recoverCarOnRoad);
     document.getElementById('touch-home')?.addEventListener('click', resetToStart);
@@ -3225,62 +3910,8 @@ function createConvexMirrorMesh() {
       return `${String(m).padStart(2, '0')}:${s < 10 ? '0' : ''}${s.toFixed(1)}`;
     }
 
-    // 尋找最近道路投影點（局部窗口搜尋＋全域備援）
-    function projectCarOntoRoad() {
-      let bestIdx = carState.nearestSampleIdx;
-      let bestDistSq = Infinity;
-      const winStart = Math.max(0, carState.nearestSampleIdx - 28);
-      const winEnd = Math.min(NUM_SAMPLES, carState.nearestSampleIdx + 28);
-
-      for (let i = winStart; i <= winEnd; i++) {
-        const p = roadSamples[i].pos;
-        const d2 = (carState.pos.x - p.x) ** 2 + (carState.pos.z - p.z) ** 2 + ((carState.pos.y - p.y) * 1.4) ** 2;
-        if (d2 < bestDistSq) {
-          bestDistSq = d2;
-          bestIdx = i;
-        }
-      }
-
-      if (bestDistSq > 450) {
-        for (let i = 0; i <= NUM_SAMPLES; i += 2) {
-          const p = roadSamples[i].pos;
-          const d2 = (carState.pos.x - p.x) ** 2 + (carState.pos.z - p.z) ** 2 + ((carState.pos.y - p.y) * 1.4) ** 2;
-          if (d2 < bestDistSq) {
-            bestDistSq = d2;
-            bestIdx = i;
-          }
-        }
-      }
-
-      carState.nearestSampleIdx = bestIdx;
-      const s0 = roadSamples[bestIdx];
-      const s1 = roadSamples[Math.min(NUM_SAMPLES, bestIdx + 1)];
-      const seg = new THREE.Vector3().subVectors(s1.pos, s0.pos);
-      const segLenSq = seg.x * seg.x + seg.z * seg.z || 1;
-      const t = THREE.MathUtils.clamp(
-        ((carState.pos.x - s0.pos.x) * seg.x + (carState.pos.z - s0.pos.z) * seg.z) / segLenSq,
-        0, 1
-      );
-
-      const projPos = new THREE.Vector3().lerpVectors(s0.pos, s1.pos, t);
-      const smoothTangent = new THREE.Vector3().lerpVectors(s0.flatTangent, s1.flatTangent, t).normalize();
-      const smoothRight = new THREE.Vector3(-smoothTangent.z, 0, smoothTangent.x).normalize();
-
-      const dx = carState.pos.x - projPos.x;
-      const dz = carState.pos.z - projPos.z;
-      carState.lateralOffset = dx * smoothRight.x + dz * smoothRight.z;
-
-      return { projPos, smoothTangent, smoothRight, sample: s0 };
-    }
-
-    function updatePhysics(dt) {
-      const forwardDir = new THREE.Vector3(Math.sin(carState.heading), 0, Math.cos(carState.heading));
-      const rightDir = new THREE.Vector3(Math.cos(carState.heading), 0, -Math.sin(carState.heading));
-
-      const forwardSpeed = carState.vel.dot(forwardDir);
-      const lateralSpeed = carState.vel.dot(rightDir);
-      const absSpeed = Math.abs(forwardSpeed);
-
+    // 每幀：駕駛物理（js/driving.js）→ 計時、甩尾分數、地標、完賽與 HUD
+    function updateDrivingAndHud(dt) {
       if ((keys.forward || keys.backward) && !carState.raceFinished) {
         carState.raceStarted = true;
       }
@@ -3288,163 +3919,10 @@ function createConvexMirrorMesh() {
         carState.elapsedTime += dt;
       }
 
-      // 方向盤轉向輸入
-      const steerInput = (keys.left ? 1 : 0) - (keys.right ? 1 : 0);
-      const speedSteerFactor = THREE.MathUtils.lerp(1.0, 0.52, THREE.MathUtils.clamp(absSpeed / 38.0, 0, 1));
-      const targetSteer = steerInput * 0.62 * speedSteerFactor;
-      carState.steerAngle = THREE.MathUtils.lerp(carState.steerAngle, targetSteer, Math.min(1, dt * 11.0));
+      const { sample, forwardSpeed: nextForwardSpeed, isDrifting, slipSpeed } = driving.update(dt);
 
-      // 縱向動力、漸進腳煞車與坡度重力
-      const curSample = roadSamples[carState.nearestSampleIdx];
-      const slopeRad = Math.atan(curSample.slopePct / 100);
-      const upDownAlign = forwardDir.dot(curSample.flatTangent);
-      const gradeForce = -Math.sin(slopeRad) * 9.8 * upDownAlign;
-
-      let accel = 0;
-      if (keys.forward) {
-        // 高扭力爬坡與五檔衝刺推力曲線（極速可達 145+ km/h）
-        const powerFactor = THREE.MathUtils.clamp(1.28 - absSpeed / 56.0, 0.42, 1.28);
-        accel += 24.5 * powerFactor;
-      }
-      if (keys.backward) {
-        if (forwardSpeed > 0.8) {
-          // 漸進線性腳煞車
-          accel -= 21.0;
-        } else {
-          // 倒車檔
-          accel -= 12.5;
-        }
-      }
-
-      // 滾動阻力與空氣平方阻力
-      const drag = -forwardSpeed * 0.065 - forwardSpeed * absSpeed * 0.0046;
-      let nextForwardSpeed = forwardSpeed + (accel + gradeForce + drag) * dt;
-
-      // 手煞車：低縱向衰減＋起甩打滑＋靜止坡道駐煞鎖定
-      if (keys.handbrake) {
-        if (absSpeed < 0.45 && !keys.forward && !keys.backward) {
-          nextForwardSpeed = 0;
-        } else {
-          nextForwardSpeed *= Math.pow(0.996, dt * 60);
-        }
-      }
-
-      // 側向抓地力與手煞車起甩打滑（Drift）
-      const lateralGrip = keys.handbrake ? 0.72 : 8.2;
-      const nextLateralSpeed = lateralSpeed * Math.exp(-lateralGrip * dt);
-
-      // 車頭指向角速度
-      if (absSpeed > 0.25 || (keys.handbrake && absSpeed > 0.15)) {
-        const revSign = nextForwardSpeed >= -0.05 ? 1 : -1;
-        const turnRate = keys.handbrake ? 3.25 : 2.15;
-        const lowSpeedBoost = THREE.MathUtils.clamp(absSpeed / 4.5, 0.25, 1.0);
-        carState.heading += carState.steerAngle * turnRate * lowSpeedBoost * revSign * dt;
-      }
-
-      // 合成世界平面速度向量
-      const newForwardDir = new THREE.Vector3(Math.sin(carState.heading), 0, Math.cos(carState.heading));
-      const newRightDir = new THREE.Vector3(Math.cos(carState.heading), 0, -Math.sin(carState.heading));
-      carState.vel.copy(newForwardDir).multiplyScalar(nextForwardSpeed).addScaledVector(newRightDir, nextLateralSpeed);
-      carState.speed = carState.vel.length();
-
-      // 更新車身位置
-      carState.pos.x += carState.vel.x * dt;
-      carState.pos.z += carState.vel.z * dt;
-
-      // 貼齊路面並處理護欄順向滑行碰撞
-      const { projPos, smoothTangent, smoothRight, sample } = projectCarOntoRoad();
-      carState.pos.y = projPos.y;
-
-      const maxLateral = ROAD_HALF_WIDTH - 0.92;
-      if (Math.abs(carState.lateralOffset) > maxLateral) {
-        const wallSide = Math.sign(carState.lateralOffset);
-        const penetration = Math.abs(carState.lateralOffset) - maxLateral;
-        carState.pos.addScaledVector(smoothRight, -wallSide * penetration);
-
-        // 僅消除垂直撞入牆面的速度分量，保留沿護欄切線的絲滑滑行動能
-        const vDotOut = carState.vel.dot(smoothRight) * wallSide;
-        if (vDotOut > 0) {
-          if (vDotOut > 3.2) {
-            cameraShake = Math.min(0.28, vDotOut * 0.025);
-          }
-          carState.vel.addScaledVector(smoothRight, -wallSide * vDotOut);
-          carState.vel.multiplyScalar(0.992);
-        }
-
-        // 護欄角度修正：方向盤優先順應修正（幅度極低），方向盤回正時順著目前車頭行進方向微幅轉正
-        const moveSign = smoothTangent.dot(newForwardDir) >= 0 ? 1 : -1;
-        const wallTargetDir = smoothTangent.clone().multiplyScalar(moveSign);
-        const wallHeading = Math.atan2(wallTargetDir.x, wallTargetDir.z);
-
-        let angleDiff = wallHeading - carState.heading;
-        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-
-        if (Math.abs(steerInput) > 0.05) {
-          carState.heading += steerInput * 0.22 * dt;
-        } else {
-          carState.heading += angleDiff * 0.35 * dt;
-        }
-      }
-
-      // 起點與終點紐澤西護欄實體阻擋（防止倒車或衝過終點掉出地圖）
-      if (carState.nearestSampleIdx <= 2) {
-        const startGate = roadSamples[2];
-        const relStart = new THREE.Vector3().subVectors(carState.pos, startGate.pos);
-        const pastStart = relStart.dot(startGate.flatTangent);
-        if (pastStart < 0.85) {
-          carState.pos.addScaledVector(startGate.flatTangent, 0.85 - pastStart);
-          const vBack = carState.vel.dot(startGate.flatTangent);
-          if (vBack < 0) {
-            cameraShake = Math.min(0.25, Math.abs(vBack) * 0.025);
-            carState.vel.addScaledVector(startGate.flatTangent, -vBack);
-          }
-        }
-      } else if (carState.nearestSampleIdx >= NUM_SAMPLES - 2) {
-        const endGate = roadSamples[NUM_SAMPLES - 1];
-        const relEnd = new THREE.Vector3().subVectors(carState.pos, endGate.pos);
-        const pastEnd = relEnd.dot(endGate.flatTangent);
-        if (pastEnd > -0.85) {
-          carState.pos.addScaledVector(endGate.flatTangent, -0.85 - pastEnd);
-          const vFwd = carState.vel.dot(endGate.flatTangent);
-          if (vFwd > 0) {
-            cameraShake = Math.min(0.25, vFwd * 0.025);
-            carState.vel.addScaledVector(endGate.flatTangent, -vFwd);
-          }
-        }
-      }
-
-      // 甩尾判定與後輪白煙特效
-      const slipSpeed = Math.abs(nextLateralSpeed);
-      if (slipSpeed > 2.4 && carState.speed > 4.0) {
+      if (isDrifting) {
         carState.driftScore += Math.round(slipSpeed * dt * 28);
-        if (Math.random() < 0.75) {
-          const rearL = carState.pos.clone().addScaledVector(newForwardDir, -1.35).addScaledVector(newRightDir, -0.85);
-          const rearR = carState.pos.clone().addScaledVector(newForwardDir, -1.35).addScaledVector(newRightDir, 0.85);
-          spawnDriftSmoke(rearL);
-          spawnDriftSmoke(rearR);
-        }
-      }
-
-      // 更新 3D 車身姿態與四輪動畫
-      carGroup.position.copy(carState.pos);
-      carGroup.rotation.order = 'YXZ';
-      carGroup.rotation.y = carState.heading;
-      const targetPitch = -Math.atan(sample.slopePct / 100) * upDownAlign;
-      const targetRoll = THREE.MathUtils.clamp(-nextLateralSpeed * 0.016 - carState.steerAngle * 0.04, -0.11, 0.11);
-      carState.pitch = THREE.MathUtils.lerp(carState.pitch, targetPitch, Math.min(1, dt * 10));
-      carState.roll = THREE.MathUtils.lerp(carState.roll, targetRoll, Math.min(1, dt * 10));
-      carGroup.rotation.x = carState.pitch;
-      carGroup.rotation.z = carState.roll;
-
-      carState.wheelSpin += (nextForwardSpeed / 0.35) * dt;
-      wheelMeshes.forEach(w => {
-        w.pivot.rotation.y = w.front ? carState.steerAngle : 0;
-        w.mesh.rotation.x = carState.wheelSpin;
-      });
-
-      if (brakeLightMat) {
-        brakeLightMat.color.setHex((keys.backward || keys.handbrake) ? 0xff2222 : 0x7f1d1d);
       }
 
       // 地標觸發與完賽判定
@@ -3548,25 +4026,82 @@ function createConvexMirrorMesh() {
       dirLight.target.updateMatrixWorld();
 
       // 更新白煙粒子
-      for (let i = 0; i < SMOKE_COUNT; i++) {
-        const p = smokeParticles[i];
-        if (!p.mesh.visible) continue;
-        p.life -= dt;
-        if (p.life <= 0) {
-          p.mesh.visible = false;
-        } else {
-          p.mesh.position.addScaledVector(p.vel, dt);
-          const ratio = 1 - p.life / p.maxLife;
-          p.mesh.scale.setScalar(0.5 + ratio * 1.9);
-          p.mesh.material.opacity = (1 - ratio) * 0.42;
-        }
-      }
+      car.updateEffects(dt);
     }
+
+    // =========================================================================
+    // 後處理：MSAA 場景緩衝 → 泛光（亮部擷取＋高斯模糊）→ 調色／對比／飽和／暗角
+    // =========================================================================
+    const post = (() => {
+      const gl2 = renderer.capabilities.isWebGL2;
+      const mkRT = (w, h, ms) => { const rt = ms && gl2 ? new THREE.WebGLMultisampleRenderTarget(w, h) : new THREE.WebGLRenderTarget(w, h); if (ms && gl2) rt.samples = 4; return rt; };
+      let rtScene = mkRT(1, 1, true), rtA = mkRT(1, 1, false), rtB = mkRT(1, 1, false);
+      const qCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1), qScene = new THREE.Scene();
+      const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2)); quad.frustumCulled = false; qScene.add(quad);
+      const vs = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
+      const mk = (u, fs) => new THREE.ShaderMaterial({ uniforms: u, vertexShader: vs, fragmentShader: fs, depthTest: false, depthWrite: false });
+      const bright = mk({ tDiffuse: { value: null }, uTh: { value: 1.0 } }, `
+        varying vec2 vUv; uniform sampler2D tDiffuse; uniform float uTh;
+        void main(){ vec3 c = texture2D(tDiffuse, vUv).rgb; float l = max(c.r, max(c.g, c.b));
+          gl_FragColor = vec4(c * smoothstep(uTh, uTh + 0.18, l), 1.0); }`);
+      const blur = mk({ tDiffuse: { value: null }, uDir: { value: new THREE.Vector2() } }, `
+        varying vec2 vUv; uniform sampler2D tDiffuse; uniform vec2 uDir;
+        void main(){ vec3 c = texture2D(tDiffuse, vUv).rgb * 0.227;
+          c += (texture2D(tDiffuse, vUv + uDir * 1.385).rgb + texture2D(tDiffuse, vUv - uDir * 1.385).rgb) * 0.316;
+          c += (texture2D(tDiffuse, vUv + uDir * 3.231).rgb + texture2D(tDiffuse, vUv - uDir * 3.231).rgb) * 0.070;
+          gl_FragColor = vec4(c, 1.0); }`);
+      const comp = mk({ tScene: { value: null }, tBloom: { value: null }, uBloom: { value: 0.55 }, uSat: { value: 1.10 },
+                        uContrast: { value: 1.07 }, uVig: { value: 0.30 }, uSpeed: { value: 0 }, uExposure: { value: 1.06 } }, `
+        varying vec2 vUv; uniform sampler2D tScene, tBloom; uniform float uBloom, uSat, uContrast, uVig, uSpeed, uExposure;
+        vec3 RRTAndODTFit(vec3 v){ vec3 a = v * (v + 0.0245786) - 0.000090537; vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081; return a / b; }
+        vec3 ACES(vec3 c){
+          const mat3 IN = mat3(0.59719, 0.07600, 0.02840, 0.35458, 0.90834, 0.13383, 0.04823, 0.01566, 0.83777);
+          const mat3 OUT = mat3(1.60475, -0.10208, -0.00327, -0.53108, 1.10813, -0.07276, -0.07367, -0.00605, 1.07602);
+          c *= uExposure / 0.6; c = OUT * RRTAndODTFit(IN * c); return clamp(c, 0.0, 1.0); }
+        void main(){
+          vec3 c = texture2D(tScene, vUv).rgb + texture2D(tBloom, vUv).rgb * uBloom;
+          c = ACES(c);
+          c = (c - 0.5) * uContrast + 0.5;
+          float l = dot(c, vec3(0.299, 0.587, 0.114));
+          c = mix(vec3(l), c, uSat);
+          c *= mix(vec3(0.97, 0.99, 1.03), vec3(1.04, 1.0, 0.95), smoothstep(0.2, 0.8, l));
+          float d = length(vUv - 0.5) * (1.0 + uSpeed * 0.35);
+          c *= 1.0 - uVig * smoothstep(0.35, 0.85, d);
+          gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0); }`);
+      const pass = (mat, target) => { quad.material = mat; renderer.setRenderTarget(target); renderer.render(qScene, qCam); };
+      function setSize() {
+        const pr = renderer.getPixelRatio(), w = Math.floor(innerWidth * pr), h = Math.floor(innerHeight * pr);
+        rtScene.setSize(w, h); rtA.setSize(w >> 2, h >> 2); rtB.setSize(w >> 2, h >> 2);
+      }
+      setSize();
+      return {
+        comp, setSize,
+        render() {
+          renderer.setRenderTarget(rtScene); renderer.render(scene, camera);
+          bright.uniforms.tDiffuse.value = rtScene.texture; pass(bright, rtA);
+          for (let k = 0; k < 2; k++) {
+            blur.uniforms.tDiffuse.value = rtA.texture; blur.uniforms.uDir.value.set(1 / rtA.width, 0); pass(blur, rtB);
+            blur.uniforms.tDiffuse.value = rtB.texture; blur.uniforms.uDir.value.set(0, 1 / rtA.height); pass(blur, rtA);
+          }
+          comp.uniforms.tScene.value = rtScene.texture; comp.uniforms.tBloom.value = rtA.texture; pass(comp, null);
+        }
+      };
+    })();
+    let postEnabled = true;
+    // 後處理開啟時由合成著色器做 ACES 色調映射，避免重複套用
+    function applyToneMode() {
+      renderer.toneMapping = postEnabled ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+      scene.traverse(o => { if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.needsUpdate = true); });
+    }
+    applyToneMode();
+    function togglePost() { postEnabled = !postEnabled; applyToneMode(); showToast(postEnabled ? '✨ 畫面後處理：開啟' : '✨ 畫面後處理：關閉（省效能）'); }
+    window.addEventListener('keydown', e => { if (e.code === 'KeyP') togglePost(); });
 
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+      post.setSize();
     });
 
     // =========================================================================
@@ -3578,10 +4113,14 @@ function createConvexMirrorMesh() {
       const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
       lastFrameTime = now;
 
-      updatePhysics(dt);
+      updateDrivingAndHud(dt);
       updateCameraAndEffects(dt);
+      skyU.uTime.value = now / 1000;
+      windU.value = now / 1000;
+      skyDome.position.copy(camera.position);
       renderMinimap(carState.pos, carState.heading);
-      renderer.render(scene, camera);
+      post.comp.uniforms.uSpeed.value = THREE.MathUtils.clamp(carState.speed * 3.6 / 140, 0, 1);
+      if (postEnabled) post.render(); else renderer.render(scene, camera);
     }
 
     let gameBooted = false;
@@ -3598,6 +4137,7 @@ function createConvexMirrorMesh() {
     } else {
       window.addEventListener('load', bootGame);
     }
+    })();
   </script>
 </body>
 </html>
